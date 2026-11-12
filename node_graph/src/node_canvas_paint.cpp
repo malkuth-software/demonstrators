@@ -347,7 +347,10 @@ void NodeCanvasView::paint_title(gf::Painter& painter, std::uint32_t slot, const
             result = gf::lay_out_paragraph(&painter, node.title, style, paragraph_.storage());
         }
         const gf::ParagraphMetrics* metrics = result.metrics();
-        if (metrics == nullptr) return;
+        if (metrics == nullptr) {
+            ++statistics_.title_layouts_failed;
+            return;
+        }
         ++statistics_.titles_laid_out;
         const std::span<const gf::ParagraphLine> lines = paragraph_.lines((*metrics).line_count);
         cached.line_count = std::min<std::size_t>(lines.size(), cached.lines.size());

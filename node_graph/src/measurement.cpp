@@ -36,6 +36,7 @@ void write_canvas(JsonWriter& json, const CanvasStatistics& canvas) {
     field(json, "link_points_flattened", canvas.link_points_flattened);
     field(json, "titles_laid_out", canvas.titles_laid_out);
     field(json, "title_cache_hits", canvas.title_cache_hits);
+    field(json, "title_layouts_failed", canvas.title_layouts_failed);
     field(json, "title_lines_drawn", canvas.title_lines_drawn);
     field(json, "text_runs_drawn", canvas.text_runs_drawn);
     field(json, "text_skipped_small", canvas.text_skipped_small);

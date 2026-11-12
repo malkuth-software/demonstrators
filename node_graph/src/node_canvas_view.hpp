@@ -102,6 +102,8 @@ struct CanvasStatistics final {
     std::uint64_t link_points_flattened{};
     std::uint64_t titles_laid_out{};
     std::uint64_t title_cache_hits{};
+    // Titles lay_out_paragraph refused (its metrics absent after one retry).
+    std::uint64_t title_layouts_failed{};
     std::uint64_t title_lines_drawn{};
     std::uint64_t text_runs_drawn{};
     std::uint64_t text_skipped_small{};
