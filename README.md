@@ -4,7 +4,7 @@ Applications that exercise GUI.Forms under load, written against its public API 
 
 | App | Folder | Status |
 |---|---|---|
-| Chat stress | `chat_stress/` | in progress |
+| Chat stress | `chat_stress/` | written, not yet built |
 | Node graph | `node_graph/` | planned |
 
 Licence: PolyForm Noncommercial 1.0.0 (see `LICENSE`). GUI.Forms itself is MIT.
