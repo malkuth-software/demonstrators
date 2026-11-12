@@ -87,7 +87,7 @@ void ChatRows::detach() {
 
 const gf::SurfaceRoot* ChatRows::metrics_root() const noexcept {
     if (view_ == nullptr) return nullptr;
-    const gf::SurfaceRoot* root = (*view_).surface_root().get();
+    const gf::SurfaceRoot* root = (*view_).attached_surface_root();
     return root;
 }
 
@@ -198,7 +198,7 @@ void ChatRows::measure(gf::VirtualRowMeasure& request) {
     const RowIndex row{request.row.value};
     const RowLayoutEntry& entry = layout_row(row, request.width);
     if (entry.header && view_ != nullptr) {
-        gf::SurfaceRoot* root = (*view_).surface_root().get();
+        gf::SurfaceRoot* root = (*view_).attached_surface_root();
         if (root != nullptr) {
             static_cast<void>(atlas_.ensure(*root, *view_, entry.author, corpus_.user(entry.author)));
         }

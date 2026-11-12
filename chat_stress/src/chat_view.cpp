@@ -284,7 +284,7 @@ void ChatRoot::on_row_activated(gf::VirtualRowIndex row) {
     corpus_.message_text(message, text);
     editing_ = message;
     (*compose_).text = text;
-    gf::SurfaceRoot* root = surface_root().get();
+    gf::SurfaceRoot* root = attached_surface_root();
     if (root != nullptr) static_cast<void>((*root).request_focus(compose_));
 }
 
