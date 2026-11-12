@@ -1,0 +1,10 @@
+# Demonstrators
+
+Applications that exercise GUI.Forms under load, written against its public API only. Each one is a stress test and a worked example; the gaps it finds are fixed in GUI.Forms before 1.0.
+
+| App | Folder | Status |
+|---|---|---|
+| Chat stress | `chat_stress/` | in progress |
+| Node graph | `node_graph/` | planned |
+
+Licence: PolyForm Noncommercial 1.0.0 (see `LICENSE`). GUI.Forms itself is MIT.
