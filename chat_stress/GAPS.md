@@ -194,3 +194,8 @@ needed:
   `arrange` with its rectangle after `arrange_self`, as `control.hpp`
   describes for custom layout owners (*unverified* that a child's arrange
   takes the parent's local coordinates).
+
+## Found while debugging the first build (2026-11-12)
+
+- **A8. Calling a child's `arrange()` directly is silently undone.** A custom layout that arranges its children by calling `arrange()` instead of `arrange_self` plus `set_child_layout` gets its placement overwritten by the window's own pass (from `layout_slot_.value_or(requested_bounds_)`), with no diagnostic. The demonstrator painted nothing because of it. Proposal for GUI.Forms: refuse or report a direct `arrange()` on a child from inside a parent's layout pass, or make the published slot the only path.
+- **A9. `patch_bgra32_premultiplied` returns a new image id, and the old one is refused afterwards.** Keeping the old id refuses every later patch and draws from a stale image, again silently. Proposal: a stale image id in patch or draw is reported (a counted refusal with a diagnostic), and the docs state that the returned id replaces the old one.
