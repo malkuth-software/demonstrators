@@ -117,10 +117,14 @@ void ChatRoot::arrange(gf::Rect final_bounds) {
     double log_height = bottom;
     if (log_height < 0.0) log_height = 0.0;
     const gf::Rect log{0.0, 0.0, width, log_height};
-    (*view_).arrange(log);
-    (*badge_).arrange(badge);
-    (*compose_).arrange(compose);
-    (*status_).arrange(status);
+    // Publish each child's slot; the window arranges the children in the
+    // same descent, right after this control. A child's own arrange is not
+    // called here: the window would arrange it again from its slot (the
+    // requested bounds when none was published), undoing the placement.
+    set_child_layout(view_, log);
+    set_child_layout(badge_, badge);
+    set_child_layout(compose_, compose);
+    set_child_layout(status_, status);
 }
 
 // -- operations ---------------------------------------------------------------------

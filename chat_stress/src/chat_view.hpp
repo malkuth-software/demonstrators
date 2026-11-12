@@ -102,8 +102,9 @@ public:
 
     // -- Control ---------------------------------------------------------------------
     [[nodiscard]] gui_forms::Size measure(gui_forms::Size available) override;
-    // Places the children itself (arrange_self, then each child): the log
-    // fills what the badge, the compose box and the status line leave.
+    // Places the children itself (arrange_self, then each child's slot
+    // through set_child_layout): the log fills what the badge, the compose
+    // box and the status line leave.
     void arrange(gui_forms::Rect final_bounds) override;
 
 private:

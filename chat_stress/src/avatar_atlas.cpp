@@ -135,6 +135,9 @@ bool AvatarAtlas::ensure(gf::SurfaceRoot& root, gf::Control& consumer, UserId us
         ++counters_.upload_failures;
         return false;
     }
+    // A patch gives the image a new identity (the registry bumps its
+    // generation); the old one is stale from now on.
+    image_ = patched.image;
     target.user = user;
     target.used = true;
     target.last_use = clock_;

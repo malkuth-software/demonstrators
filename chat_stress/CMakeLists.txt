@@ -63,13 +63,18 @@ if(TARGET GUIForms::Application)
     add_executable(chat-stress ${CHAT_STRESS_MODEL_SOURCES} ${CHAT_STRESS_APPLICATION_SOURCES})
     target_link_libraries(chat-stress PRIVATE GUIForms::Application)
     chat_stress_configure(chat-stress)
+    # The hosts look for "fonts" beside the program (on macOS an unbundled
+    # program's main-bundle Resources folder is its own directory), so the
+    # bundled faces are copied there on every platform; Windows also needs
+    # the GUI.Forms DLLs beside it (the other platforms use the rpath).
+    add_custom_command(TARGET chat-stress POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${GUIForms_FONT_DIR}" "$<TARGET_FILE_DIR:chat-stress>/fonts")
     if(WIN32)
         add_custom_command(TARGET chat-stress POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "$<TARGET_FILE:GUIForms::Application>" "$<TARGET_FILE:GUIForms::Threading>"
-                "$<TARGET_FILE_DIR:chat-stress>"
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${GUIForms_FONT_DIR}" "$<TARGET_FILE_DIR:chat-stress>/fonts")
+                "$<TARGET_FILE_DIR:chat-stress>")
     endif()
 else()
     message(STATUS "chat-stress: GUIForms::Application is not installed; building the headless tests only")
