@@ -4,6 +4,7 @@
 #include "measurement.hpp"
 #include "process_stats.hpp"
 
+#include <gui_forms/allocation/statistics/allocation_statistics.hpp>
 #include <gui_forms/capture/offscreen_raster/offscreen_raster.hpp>
 #include <gui_forms/events/input_events/input_events.hpp>
 #include <gui_forms/window/window.hpp>
@@ -48,11 +49,12 @@ struct SetupRun final {
     std::uint64_t setup_us{};         // rows handed through the first frame
     bool frame_ready{};
     gf::VirtualRowsStatistics view{};
-    WrapCounters wrap{};
+    TextLayoutCounters text{};
     RingCounters ring{};
     CorpusCounters corpus{};
-    std::optional<std::int64_t> heap_blocks_delta{};
-    std::optional<std::int64_t> heap_bytes_delta{};
+    // What this thread allocated through GUI.Forms' counted paths over the
+    // setup span (AllocationScope): not the process's allocations.
+    gf::AllocationStatistics allocations{};
     std::size_t corpus_bytes{};
 };
 
@@ -66,12 +68,9 @@ struct SteadyState final {
     std::size_t ring_bytes{};
     std::size_t atlas_bytes{};
     std::size_t corpus_bytes{};
+    // GUI.Forms' counted allocation paths, process-wide since start.
+    gf::AllocationStatistics allocations{};
 };
-
-std::optional<std::int64_t> signed_delta(std::uint64_t after, std::uint64_t before) {
-    const std::int64_t delta = static_cast<std::int64_t>(after) - static_cast<std::int64_t>(before);
-    return delta;
-}
 
 std::uint64_t median(std::vector<std::uint64_t> values) {
     if (values.empty()) return 0U;
@@ -130,10 +129,12 @@ void write_run(JsonWriter& json, const SetupRun& run) {
     json.value(static_cast<std::uint64_t>(run.view.index_depth));
     json.key("settle_passes");
     json.value(static_cast<std::uint64_t>(run.view.last_settle_passes));
-    json.key("text_measure_calls");
-    json.value(run.wrap.measure_calls);
-    json.key("text_measured_bytes");
-    json.value(run.wrap.measured_bytes);
+    json.key("index_bytes");
+    json.value(static_cast<std::uint64_t>(run.view.index_bytes));
+    json.key("text_shaping_calls");
+    json.value(run.text.shaping_calls);
+    json.key("text_shaped_bytes");
+    json.value(run.text.shaped_bytes);
     json.key("layout_ring_misses");
     json.value(run.ring.misses);
     json.key("timestamp_hash_calls");
@@ -142,22 +143,10 @@ void write_run(JsonWriter& json, const SetupRun& run) {
     json.value(run.corpus.texts_generated);
     json.key("corpus_resident_bytes");
     json.value(static_cast<std::uint64_t>(run.corpus_bytes));
-    // Net heap change across the setup span (not an allocation count; see
-    // process_stats.hpp and GAPS.md 6).
-    json.key("heap_blocks_delta");
-    if (run.heap_blocks_delta.has_value()) {
-        json.value(*run.heap_blocks_delta);
-    } else {
-        json.null();
-    }
-    json.key("heap_bytes_delta");
-    if (run.heap_bytes_delta.has_value()) {
-        json.value(*run.heap_bytes_delta);
-    } else {
-        json.null();
-    }
-    json.key("allocations");
-    json.null();
+    // GUI.Forms' counted allocation paths on this thread over the setup
+    // span; the record's "scope" member names what is counted.
+    json.key("gui_forms_allocations");
+    json.raw(run.allocations.to_json());
     json.end_object();
 }
 
@@ -188,7 +177,7 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
             Corpus corpus(corpus_options);
             run.corpus_us = microseconds_between(corpus_start, Clock::now());
 
-            const std::optional<HeapReading> heap_before = heap_in_use();
+            const gf::AllocationScope allocation_scope{};
             const Clock::time_point t0 = Clock::now();
             std::shared_ptr<ChatRoot> root = gf::make_control<ChatRoot>(gf::StableId("chat-stress"), corpus);
             const Clock::time_point t_rows = Clock::now();
@@ -201,7 +190,7 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
                 capture.scale = capture_scale;
                 const std::optional<gf::WindowCapture> frame = attached.capture_window(capture);
                 const Clock::time_point t_frame = Clock::now();
-                const std::optional<HeapReading> heap_after = heap_in_use();
+                run.allocations = allocation_scope.counted();
 
                 run.frame_ready = frame.has_value();
                 run.rows_handed_us = microseconds_between(t0, t_rows);
@@ -209,14 +198,10 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
                 run.frame_us = microseconds_between(t_layout, t_frame);
                 run.setup_us = microseconds_between(t0, t_frame);
                 run.view = (*root).view().statistics();
-                run.wrap = (*root).rows().wrap_counters();
+                run.text = (*root).rows().text_counters();
                 run.ring = (*root).rows().ring_counters();
                 run.corpus = corpus.counters();
                 run.corpus_bytes = corpus.resident_bytes();
-                if (heap_before.has_value() && heap_after.has_value()) {
-                    run.heap_blocks_delta = signed_delta((*heap_after).blocks_in_use, (*heap_before).blocks_in_use);
-                    run.heap_bytes_delta = signed_delta((*heap_after).bytes_in_use, (*heap_before).bytes_in_use);
-                }
 
                 const bool last = size == setup_sizes.back() && attempt + 1U == setup_runs;
                 if (last) {
@@ -227,6 +212,7 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
                     steady.atlas_bytes = (*root).atlas().storage_bytes();
                     steady.corpus_bytes = corpus.resident_bytes();
                     steady.footprint_bytes = process_footprint_bytes();
+                    steady.allocations = gf::allocation_statistics();
                     // Nothing is scheduled headless: this observes background
                     // work only. The windowed `idle` workload counts presents
                     // and wakes under a real host.
@@ -275,10 +261,14 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
     for (const std::uint64_t size : setup_sizes) {
         std::vector<std::uint64_t> setup{};
         std::vector<std::uint64_t> measured{};
+        std::vector<std::uint64_t> shaping{};
+        std::vector<std::uint64_t> allocations{};
         for (const SetupRun& run : runs) {
             if (run.rows != size) continue;
             setup.push_back(run.setup_us);
             measured.push_back(run.view.rows_measured);
+            shaping.push_back(run.text.shaping_calls);
+            allocations.push_back(run.allocations.total().allocations);
         }
         json.begin_object();
         json.key("rows");
@@ -287,6 +277,10 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
         json.value(median(setup));
         json.key("rows_measured_median");
         json.value(median(measured));
+        json.key("text_shaping_calls_median");
+        json.value(median(shaping));
+        json.key("gui_forms_counted_allocations_median");
+        json.value(median(allocations));
         json.end_object();
     }
     json.end_array();
@@ -316,12 +310,22 @@ int collect_setup(const AppOptions& options, gf::Application& application) {
     json.value(static_cast<std::uint64_t>(steady.view.index_nodes));
     json.key("index_depth");
     json.value(static_cast<std::uint64_t>(steady.view.index_depth));
+    json.key("index_bytes");
+    json.value(static_cast<std::uint64_t>(steady.view.index_bytes));
+    json.key("index_measured");
+    json.value(static_cast<std::uint64_t>(steady.view.index_measured));
+    json.key("rows_forgotten");
+    json.value(steady.view.rows_forgotten);
+    json.key("measured_row_budget");
+    json.value(static_cast<std::uint64_t>(ChatRoot::measured_row_budget));
     json.key("layout_ring_bytes");
     json.value(static_cast<std::uint64_t>(steady.ring_bytes));
     json.key("atlas_bytes");
     json.value(static_cast<std::uint64_t>(steady.atlas_bytes));
     json.key("corpus_resident_bytes");
     json.value(static_cast<std::uint64_t>(steady.corpus_bytes));
+    json.key("gui_forms_allocations");
+    json.raw(steady.allocations.to_json());
     json.end_object();
     json.end_object();
 

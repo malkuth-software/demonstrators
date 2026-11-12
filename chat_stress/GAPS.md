@@ -1,28 +1,42 @@
 # Chat stress: where the public GUI.Forms API fell short
 
-Written against the cp29 integration head (`claude/batch-cp29-2b-b`,
-`3e2ae741d`), installed headers only. Each entry says what the app needed,
-what it did instead, the GUI.Forms header concerned and the shape of the
-missing API. Nothing here has been built yet; entries marked *unverified*
-depend on behaviour the headers describe but no run has confirmed.
+First written against the cp29 integration head (`3e2ae741d`), installed
+headers only. The app was moved onto the APIs that closed A1 to A7 at the
+cp29 integration tree `a5081f7d6`; the first-build fixes are demonstrators
+commits `4e9f9df`, `24e4711` and `f3faef0`. Each open entry says what the
+app needed, what it does instead, the GUI.Forms header concerned and the
+shape of the missing API. Entries marked *unverified* depend on behaviour
+the headers describe but no run has confirmed.
 
-The spec (section 9) expected ten gaps. Status against what the app actually
-needed:
-
-| Spec gap | Status |
+| Gap | Status |
 |---|---|
-| 9.1 public height index | Mostly resolved: VirtualRowsView owns the index. The memory policy is still open (A2) |
-| 9.2 owner-drawn variable-height list | Resolved by `VirtualRowsView`; new, smaller gaps in A3 to A5 |
-| 9.3 light per-row text measuring | Confirmed (A1) |
+| 9.1 public height index | Closed: VirtualRowsView owns it; its memory is A2 (closed) |
+| 9.2 owner-drawn variable-height list | Closed: `VirtualRowsView` |
+| 9.3 light per-row text measuring | Closed (A1) |
 | 9.4 scroll anchoring | Refuted for this app: VirtualRowsView anchors (`anchor_corrections`) |
-| 9.5 image atlas | Confirmed (A6) |
-| 9.6 allocation and frame counters | Half: frame, damage and wake counters are public (`MetricsSnapshot`); allocations are not (A7) |
-| 9.7 virtual semantics at scale | Confirmed (A8) |
-| 9.8 follow-tail | Resolved: `VirtualRowsView::set_follow_tail` |
-| 9.9 process footprint | Confirmed (A9) |
+| 9.5 image atlas | Closed (A6) |
+| 9.6 allocation and frame counters | Closed for GUI.Forms' own counted paths (A7); frame counters were already public |
+| 9.7 virtual semantics at scale | Open (A8) |
+| 9.8 follow-tail | Closed: `VirtualRowsView::set_follow_tail` |
+| 9.9 process footprint | Open (A9) |
 | link-router cap (coordinator's list) | Refuted for this app (A10) |
 
-## A. Gaps, most important first
+## Closed
+
+| Entry | Closed by (GUI.Forms commits, cp29) | What the app uses now |
+|---|---|---|
+| A1 paragraph wrap into caller storage | `82beb783e`, `8c16aabdc`, `28f8a5fe9` | `lay_out_paragraph`, `paint_paragraph`, `paragraph_line_box`, `ParagraphBuffers` (`text/paragraph_layout/paragraph_layout.hpp`): `src/row_layout.cpp` lays each body out into its ring slot's line records; the hand-written breaker is gone. Records count `text_shaping_calls` and `text_shaped_bytes` from `ParagraphMetrics`. |
+| A2 height index memory | `5e51eb74a` | `set_measured_row_budget(16384)`; records carry `index_bytes`, `index_measured`, `rows_forgotten`, `budget_compactions`. |
+| A3 range selection | `5e51eb74a` | `set_selection_mode(multiple_extended)`: press, Shift, Ctrl and drag with auto-scroll are the view's; the app's DragTracker and its tint painting are gone. |
+| A4 scrolled event, row invalidation | `5e51eb74a` | `scrolled()` drives the badge (the wheel and key handlers are gone); edits, deletions and the row after an erase use `invalidate_rows`. |
+| A5 neighbour-dependent heights | `5e51eb74a` | `invalidate_rows` on the row after an erased range; no further API needed. |
+| A6 image atlas | `3559a516f`, `d642b1a7e` | `ImageAtlas` (`resources/image_atlas/image_atlas.hpp`): `src/avatar_atlas.cpp` generates the pixels and keys slots by user; slots, replacement, damage and deferred fills are the atlas's. The hand-made slot table and the image-id adoption fix are gone. |
+| A7 allocation counter | `3559a516f`, `d642b1a7e` | `allocation_statistics()` in every record (`gui_forms_allocations`, with its `"scope": "gui_forms_counted_paths"`), per-tick deltas in the samples, and an `AllocationScope` around each setup run. The app's heap reading is gone. These count GUI.Forms' counted paths only, never the process. |
+
+The original text of A1 to A7 follows for reference.
+
+<details>
+<summary>A1 to A7 as first written</summary>
 
 ### A1. No public "wrap this paragraph into my storage" call
 
@@ -152,6 +166,10 @@ needed:
   for the library's own allocations, or MetricsSnapshot fields filled when
   the library is built with its counting allocator.
 
+</details>
+
+## Open
+
 ### A8. Virtual semantics allocate per read
 
 - **Found:** `Control::semantic_virtual_children()` returns
@@ -177,8 +195,35 @@ needed:
   owner-drawn wrapped text needs per-cluster positions, which comes back to
   A1 (a wrap result with cluster offsets).
 
+### A13. A deferred atlas fill repaints nobody when no one drew the slot yet
+
+- **Found:** `ImageAtlas::draw` refuses an unfilled slot without
+  remembering the user, so when a fill deferred during a paint is applied,
+  no control is damaged. A row measured inside the paint's own settle
+  (its avatar slot assigned and the fill deferred) paints the fallback
+  disc and keeps it until something else repaints that row.
+- **Did instead:** nothing; `paint_fallbacks` and the atlas's
+  `deferred_fills` in every record show how often it happens.
+- **Shape:** `draw` on an assigned slot with a pending fill remembers the
+  user (returns false, so the caller draws its fallback) so that applying
+  the fill repaints it; or `fill` takes the control to damage.
+
+### A14. Text shaping allocations are not counted
+
+- **Found:** the paragraph layout allocates nothing of its own, but the
+  bundled engine allocates glyph records per paragraph shaping and per
+  uncached measurement, outside the counted paths; the `text_layout`
+  subsystem stays at zero (`allocation/statistics/allocation_statistics.hpp`).
+  "Zero allocations per frame once warm" (spec 5) can be checked for
+  GUI.Forms' counted paths only.
+- **Shape:** count the engine's shaping buffers under `text_layout`, or a
+  reused shaping workspace so steady scrolling allocates nothing there.
+
 ## B. Smaller findings
 
+- **Selected row text:** the view paints the selected plate; the row
+  painter keeps the theme's text colour on it (VirtualRowPaint::selected
+  is available if a theme needs a different one).
 - **Clipboard:** no clipboard write reachable from a control without the
   host services API (`include/gui_forms/host/services/host_services.hpp`), so
   the context menu has no "Copy text".
@@ -190,12 +235,12 @@ needed:
   (`ChatWindowReady`) to keep to house style.
 - **Status strip:** the status line is a `Label`; `StatusStrip`'s item API was
   not needed for one line of counters.
-- **Custom layout:** ChatRoot overrides `arrange` and calls each child's
-  `arrange` with its rectangle after `arrange_self`, as `control.hpp`
-  describes for custom layout owners (*unverified* that a child's arrange
-  takes the parent's local coordinates).
+- **Custom layout:** ChatRoot overrides `arrange` and publishes each
+  child's slot with `set_child_layout` after `arrange_self` (A11).
 
 ## Found while debugging the first build (2026-11-12)
 
-- **A8. Calling a child's `arrange()` directly is silently undone.** A custom layout that arranges its children by calling `arrange()` instead of `arrange_self` plus `set_child_layout` gets its placement overwritten by the window's own pass (from `layout_slot_.value_or(requested_bounds_)`), with no diagnostic. The demonstrator painted nothing because of it. Proposal for GUI.Forms: refuse or report a direct `arrange()` on a child from inside a parent's layout pass, or make the published slot the only path.
-- **A9. `patch_bgra32_premultiplied` returns a new image id, and the old one is refused afterwards.** Keeping the old id refuses every later patch and draws from a stale image, again silently. Proposal: a stale image id in patch or draw is reported (a counted refusal with a diagnostic), and the docs state that the returned id replaces the old one.
+Numbered A11 and A12 here (they were first written as A8 and A9).
+
+- **A11. Calling a child's `arrange()` directly is silently undone.** A custom layout that arranges its children by calling `arrange()` instead of `arrange_self` plus `set_child_layout` gets its placement overwritten by the window's own pass (from `layout_slot_.value_or(requested_bounds_)`), with no diagnostic. The demonstrator painted nothing because of it. Proposal for GUI.Forms: refuse or report a direct `arrange()` on a child from inside a parent's layout pass, or make the published slot the only path.
+- **A12. `patch_bgra32_premultiplied` returns a new image id, and the old one is refused afterwards.** Keeping the old id refuses every later patch and draws from a stale image, again silently. Proposal: a stale image id in patch or draw is reported (a counted refusal with a diagnostic), and the docs state that the returned id replaces the old one.

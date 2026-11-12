@@ -13,15 +13,18 @@ Licence: PolyForm Noncommercial 1.0.0 (repository `LICENSE`). GUI.Forms is MIT.
 - A message log (`VirtualRowsView`): avatar, name, time, wrapped body, header
   grouping for consecutive messages from one author within five minutes, and
   day separators. Rows are measured lazily; the view anchors the first visible
-  row when rows above it change height.
+  row when rows above it change height and keeps at most 16,384 rows
+  measured. Bodies are laid out by GUI.Forms' paragraph layout into storage
+  the app reserves once.
 - Follow-tail while messages arrive, with an "N new messages" badge when the
   user has scrolled away from the end.
-- Single selection by click, range selection by dragging (auto-scrolls at the
-  edges), a context menu (Edit, Delete, Select none) and a compose box
-  (Enter sends, Escape cancels an edit).
-- Avatars from a bounded 256-slot atlas, generated per user.
-- A status line with the counters: rows, realised rows, rows measured, text
-  measuring calls, atlas uploads and frames.
+- The view's extended selection (click, Shift, Ctrl, and dragging, which
+  auto-scrolls at the edges), a context menu (Edit, Delete, Select none) and
+  a compose box (Enter sends, Escape cancels an edit).
+- Avatars generated per user and kept in a GUI.Forms `ImageAtlas` of 256
+  slots.
+- A status line with counters: messages, rows measured, height-index runs
+  and bytes, layout-ring hits, atlas use and the selection.
 
 The corpus is generated from a seed on demand: the same seed gives the same
 authors, timestamps and text on every machine, so nothing is stored per
@@ -59,8 +62,9 @@ left) words to about 15% of messages.
 `<output-dir>/dev/measurements/<host>/<workload>-<seed>.json`. Each record
 holds the machine (model, processor, memory, operating system), the build
 (GUI.Forms version, build type), the corpus options and the figures. Counts
-are operation counts (rows measured, text measuring calls and bytes, atlas
-uploads, height-index runs, frames presented, damage area, scheduler wakes);
+are operation counts (rows measured and forgotten, text shaping calls and
+bytes, atlas fills and draws, height-index runs and bytes, frames presented,
+damage area, scheduler wakes, GUI.Forms' counted allocations);
 times are wall-clock medians and percentiles where the spec asks for them.
 The workloads and their steps are in `docs/WORKLOADS.md`.
 
@@ -68,10 +72,13 @@ The workloads and their steps are in `docs/WORKLOADS.md`.
 
 - setup time from handing `VirtualRowsView` its rows to the first frame being
   ready, for 100, 1,000,000 and 10,000,000 rows, as the median of three runs;
-- the operation counts for each of those runs: rows measured and height-index
-  operations (from `VirtualRowsStatistics`), text measuring calls, and the net
-  heap change (an allocation *count* is not available through the public API,
-  so `allocations` is written as `null`; see `GAPS.md` A7);
+- the operation counts for each of those runs: rows measured and the height
+  index's runs, nodes and bytes (from `VirtualRowsStatistics`), text shaping
+  calls and bytes (from the paragraph layout), and the allocations GUI.Forms
+  made on its counted paths over the run (`AllocationScope`). Those count
+  GUI.Forms' own counted allocations only (image resources, the atlas,
+  effects, display chunks, damage lists), not the program's or the text
+  engine's; each figure carries `"scope": "gui_forms_counted_paths"`;
 - at 10,000,000 rows, after a scripted scroll through the log, the steady-state
   footprint and the CPU time used over ten idle seconds.
 
@@ -82,11 +89,13 @@ and the medians are printed. They are plain data for this machine and build.
 
 - `corpus_tests`: generator values against the reference script, determinism,
   bounds, timestamps and calendar dates, the erase map and edits.
-- `row_layout_tests`: line wrapping with estimated metrics, in-word breaks for
-  long URLs, the layout ring.
+- `row_layout_tests`: paragraph layout with estimated metrics (fit,
+  coverage, cluster breaks for long URLs, line storage growth), the layout
+  ring.
 - `chat_view_tests`: a headless window over a million rows: bounded startup
   measuring, follow-tail and the badge, anchoring under an edit above the
-  viewport, compose and edit, erasing, drag selection, semantics, and equal
-  heights for equal seeds.
+  viewport, compose and edit, erasing, drag selection in the view's extended
+  mode, the measured-row budget, semantics, and equal heights for equal seeds.
 - `offscreen_paint_tests`: a real raster capture: rows painted, avatars
-  uploaded, no paint fallbacks, identical pixels on a repeat capture.
+  filled into and drawn from the atlas, no paint fallbacks, identical pixels
+  on a repeat capture.

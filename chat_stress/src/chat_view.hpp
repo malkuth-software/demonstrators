@@ -3,13 +3,13 @@
 // The chat window's content (CHAT_STRESS_SPEC section 4.1): the chat log (a
 // GUI.Forms VirtualRowsView painted by ChatRows), a "new messages" badge, the
 // compose box (TextBox) and a status line with live counters. It owns the
-// interaction: selection, Enter to edit one's own message, the context menu,
-// drag selection of a range of messages (DragTracker, with auto-scroll), and
-// the append, edit, delete and erase operations the producers and workloads
-// call.
+// interaction: Enter to edit one's own message, the context menu, the badge
+// (from the view's scrolled event), and the append, edit, delete and erase
+// operations the producers and workloads call. Selection, including ranges
+// by Shift, Ctrl and dragging with auto-scroll, is the view's extended mode.
 //
 // Ownership: ChatRoot is a control (shared, owned by its window); it owns
-// its children, the atlas, the row painter, the menu and the drag tracker;
+// its children, the atlas, the row painter and the menu;
 // it borrows the corpus, which must outlive it. The row painter's targets
 // are unbound in the destructor, before the painter goes.
 //
@@ -25,7 +25,6 @@
 #include <gui_forms/controls/label.hpp>
 #include <gui_forms/controls/text_box.hpp>
 #include <gui_forms/controls/virtual_rows_view.hpp>
-#include <gui_forms/drag/drag_tracker/drag_tracker.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -44,8 +43,7 @@ struct ChatRootCounters final {
     std::uint64_t erased_rows{};
     std::uint64_t erase_operations{};
     std::uint64_t jumps{};
-    std::uint64_t drag_sessions{};
-    std::uint64_t drag_scroll_steps{};
+    std::uint64_t scroll_reports{};
     std::uint64_t badge_updates{};
     std::uint64_t status_updates{};
 };
@@ -56,6 +54,9 @@ public:
     static constexpr double compose_height = 34.0;
     static constexpr double status_height = 22.0;
     static constexpr double badge_height = 22.0;
+    // The most rows the view keeps measured (spec 4.2: bounded memory
+    // after a long scroll); rows beyond it return to the estimate.
+    static constexpr std::size_t measured_row_budget = 16'384U;
 
     ChatRoot(gui_forms::StableId stable_id, Corpus& corpus);
     ~ChatRoot() override;
@@ -93,12 +94,10 @@ public:
     [[nodiscard]] const AvatarAtlas& atlas() const noexcept { return atlas_; }
     [[nodiscard]] Corpus& corpus() const noexcept { return corpus_; }
     [[nodiscard]] gui_forms::ContextMenu& menu() noexcept { return menu_; }
-    [[nodiscard]] std::optional<RowRange> range() const noexcept { return rows_.range(); }
     [[nodiscard]] std::uint64_t pending_new_messages() const noexcept { return pending_new_; }
     // The message being edited from the compose box, or none.
     [[nodiscard]] std::optional<MessageId> editing() const noexcept { return editing_; }
     [[nodiscard]] ChatRootCounters counters() const noexcept { return counters_; }
-    [[nodiscard]] gui_forms::DragTrackerStatistics drag_statistics() const noexcept;
 
     // -- Control ---------------------------------------------------------------------
     [[nodiscard]] gui_forms::Size measure(gui_forms::Size available) override;
@@ -115,23 +114,7 @@ private:
     void on_selection_changed(const gui_forms::VirtualRowSelection& selection);
     void on_context_request(gui_forms::ContextMenuRequest& request);
     void on_menu_item(const gui_forms::MenuItemInvocation& invocation);
-    void on_view_mouse_down(const gui_forms::MouseEventArgs& arguments);
-    void on_view_mouse_move(const gui_forms::MouseEventArgs& arguments);
-    void on_view_mouse_up(const gui_forms::MouseEventArgs& arguments);
-    void on_view_wheel(const gui_forms::MouseEventArgs& arguments);
-    void on_view_key(gui_forms::KeyEventArgs& arguments);
-
-    // Drag selection targets (DragTrackerCallbacks).
-    void plan_drag(gui_forms::DragPlan& plan);
-    void preview_drag(const gui_forms::DragTrackerFrame& frame);
-    void finish_drag(const gui_forms::DragTrackerFrame& frame);
-    void announce_drag(gui_forms::DragAnnouncementRequest& request);
-    void scroll_drag(gui_forms::DragAutoScrollStep& step);
-
-    // The view's viewport in window coordinates.
-    [[nodiscard]] gui_forms::Rect viewport_in_window() const;
-    // The row under a window point, clamped into the viewport vertically.
-    [[nodiscard]] std::optional<RowIndex> row_at_window_point(gui_forms::Point window_point) const;
+    void on_view_scrolled(const gui_forms::VirtualRowScroll& scroll);
     void update_badge();
     [[nodiscard]] std::int64_t now_ms() const;
     void rebuild_menu(std::optional<RowIndex> row);
@@ -148,13 +131,8 @@ private:
     std::optional<MessageId> editing_{};
     std::optional<std::int64_t> test_time_ms_{};
     std::uint64_t pending_new_{};
-    // The drag selection: the row the press was on.
-    RowIndex drag_anchor_{};
-    std::string drag_announcement_{};
     std::string status_text_{};
     ChatRootCounters counters_{};
-    // Declared last: it borrows this control and ends first.
-    std::unique_ptr<gui_forms::DragTracker> drag_{};
 };
 
 } // namespace chat_stress

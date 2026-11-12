@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,13 @@ void follow_tail_and_badge(gf::Application& application) {
     require(!view.following_tail(), "scrolled away, the view does not follow");
     require(view.first_visible_row() == first, "appends below do not move the rows in view");
     require(root.pending_new_messages() == 7U, "the badge counts the new messages");
+
+    // Back to the end: the view's scrolled event clears the badge.
+    require(fixture.window.request_focus(root.view_pointer()), "the log takes focus again");
+    key(fixture.window, gf::PhysicalKey::end, gf::Modifier::control);
+    require(view.following_tail(), "at the end again, the view follows");
+    require(root.pending_new_messages() == 0U, "returning to the end clears the badge");
+    require(root.counters().scroll_reports > 0U, "the scrolled event reached the badge");
 }
 
 void anchor_holds_for_edits_above(gf::Application& application) {
@@ -173,6 +181,7 @@ void drag_selects_a_range(gf::Application& application) {
     Fixture fixture(application, 10'000U);
     ChatRoot& root = *fixture.root;
     gf::VirtualRowsView& view = root.view();
+    require(view.selection_mode() == gf::ListSelectionMode::multiple_extended, "the log selects ranges");
     const gf::VirtualRowIndex first = view.first_visible_row();
     const gf::Rect top_row = view.rectangle_to_window(view.row_bounds(first));
     const gf::VirtualRowIndex third{first.value + 3U};
@@ -185,10 +194,32 @@ void drag_selects_a_range(gf::Application& application) {
     pointer(fixture.window, gf::PointerAction::move, release);
     pointer(fixture.window, gf::PointerAction::up, release);
     fixture.window.perform_layout();
-    require(root.counters().drag_sessions == 1U, "the press armed a drag");
-    require(root.range().has_value(), "the drag selected a range");
-    require((*root.range()).first.value == first.value && (*root.range()).last.value == third.value,
+    const std::span<const gf::VirtualRowRange> ranges = view.selected_ranges();
+    require(ranges.size() == 1U, "the drag selected one range");
+    require(ranges[0].first == first && ranges[0].count == 4U,
             "the range runs from the pressed row to the row under the pointer");
+    require(view.selected_row_count() == 4U, "four rows are selected");
+}
+
+void budget_bounds_measured_rows(gf::Application& application) {
+    Fixture fixture(application, 1'000'000U);
+    ChatRoot& root = *fixture.root;
+    gf::VirtualRowsView& view = root.view();
+    require(view.measured_row_budget().has_value() &&
+                *view.measured_row_budget() == ChatRoot::measured_row_budget,
+            "the log keeps a measured-row budget");
+    // Jumps far apart measure fresh rows each time, more in all than the budget.
+    for (std::uint64_t jump = 0U; jump < 1'200U; ++jump) {
+        require(root.go_to_message(MessageId{jump * 800U}), "jump");
+        fixture.window.perform_layout();
+    }
+    const gf::VirtualRowsStatistics statistics = view.statistics();
+    require(statistics.rows_measured > ChatRoot::measured_row_budget, "more rows were measured than the budget");
+    // At most budget + 1 rows plus the settle's band (a viewport and its
+    // overscan: well under a thousand rows here) stay measured.
+    require(statistics.index_measured <= ChatRoot::measured_row_budget + 1'000U, "measured rows stay bounded");
+    require(statistics.rows_forgotten > 0U && statistics.budget_compactions > 0U, "the budget forgot rows");
+    require(statistics.index_bytes > 0U, "the index reports its bytes");
 }
 
 void semantics_name_realized_rows(gf::Application& application) {
@@ -221,6 +252,7 @@ int main() {
         compose_and_edit(application);
         erase_keeps_view_and_corpus_aligned(application);
         drag_selects_a_range(application);
+        budget_bounds_measured_rows(application);
         semantics_name_realized_rows(application);
         same_seed_same_heights(application);
     } catch (const std::exception& failure) {

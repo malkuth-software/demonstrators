@@ -154,11 +154,11 @@ CounterSnapshot read_counters(gf::Window& window, ChatRoot& root) {
     snapshot.view = view.statistics();
     snapshot.rows = root.rows().counters();
     snapshot.ring = root.rows().ring_counters();
-    snapshot.wrap = root.rows().wrap_counters();
-    snapshot.atlas = root.atlas().counters();
+    snapshot.text = root.rows().text_counters();
+    snapshot.avatars = root.atlas().counters();
+    snapshot.atlas = root.atlas().statistics();
     snapshot.corpus = root.corpus().counters();
     snapshot.root = root.counters();
-    snapshot.drag = root.drag_statistics();
     snapshot.metrics = window.metrics_snapshot();
     snapshot.rows_total = root.corpus().row_count();
     snapshot.semantic_children = view.realized_item_count();
@@ -168,7 +168,8 @@ CounterSnapshot read_counters(gf::Window& window, ChatRoot& root) {
     snapshot.overlay_records = root.corpus().overlay_size();
     snapshot.footprint_bytes = process_footprint_bytes();
     snapshot.cpu_microseconds = process_cpu_microseconds();
-    snapshot.heap = heap_in_use();
+    snapshot.allocations = gf::allocation_statistics();
+    snapshot.selected_rows = view.selected_row_count();
     return snapshot;
 }
 
@@ -189,6 +190,12 @@ void write_counters(JsonWriter& json, const CounterSnapshot& snapshot) {
     field(json, "index_runs", snapshot.view.index_runs);
     field(json, "index_nodes", snapshot.view.index_nodes);
     field(json, "index_depth", snapshot.view.index_depth);
+    field(json, "index_bytes", snapshot.view.index_bytes);
+    field(json, "index_measured", snapshot.view.index_measured);
+    field(json, "rows_forgotten", snapshot.view.rows_forgotten);
+    field(json, "budget_compactions", snapshot.view.budget_compactions);
+    field(json, "partial_repaints", snapshot.view.partial_repaints);
+    field(json, "selected_rows", snapshot.selected_rows);
     field(json, "semantic_children", snapshot.semantic_children);
     json.end_object();
     json.key("painter");
@@ -203,20 +210,30 @@ void write_counters(JsonWriter& json, const CounterSnapshot& snapshot) {
     field(json, "layout_ring_misses", snapshot.ring.misses);
     field(json, "layout_ring_replacements", snapshot.ring.replacements);
     field(json, "layout_ring_bytes", snapshot.ring_bytes);
-    field(json, "paragraphs_wrapped", snapshot.wrap.paragraphs);
-    field(json, "lines_wrapped", snapshot.wrap.lines);
-    field(json, "text_measure_calls", snapshot.wrap.measure_calls);
-    field(json, "text_measured_bytes", snapshot.wrap.measured_bytes);
-    field(json, "inside_word_breaks", snapshot.wrap.inside_word_breaks);
+    field(json, "paragraphs_laid_out", snapshot.text.paragraphs);
+    field(json, "lines_laid_out", snapshot.text.lines);
+    field(json, "text_shaping_calls", snapshot.text.shaping_calls);
+    field(json, "text_shaped_bytes", snapshot.text.shaped_bytes);
+    field(json, "overflowing_lines", snapshot.text.overflowing_lines);
+    field(json, "paragraph_storage_retries", snapshot.text.storage_retries);
+    field(json, "paragraph_refusals", snapshot.text.refusals);
     json.end_object();
     json.key("atlas");
     json.begin_object();
     field(json, "hits", snapshot.atlas.hits);
-    field(json, "misses", snapshot.atlas.misses);
-    field(json, "evictions", snapshot.atlas.evictions);
-    field(json, "uploads", snapshot.atlas.uploads);
-    field(json, "upload_failures", snapshot.atlas.upload_failures);
-    field(json, "paint_fallbacks", snapshot.atlas.paint_fallbacks);
+    field(json, "assignments", snapshot.atlas.assignments);
+    field(json, "replacements", snapshot.atlas.replacements);
+    field(json, "fills", snapshot.atlas.fills);
+    field(json, "fill_refusals", snapshot.atlas.fill_refusals);
+    field(json, "deferred_fills", snapshot.atlas.deferred_fills);
+    field(json, "deferred_drops", snapshot.atlas.deferred_drops);
+    field(json, "draws", snapshot.atlas.draws);
+    field(json, "draw_refusals", snapshot.atlas.draw_refusals);
+    field(json, "users_damaged", snapshot.atlas.users_damaged);
+    field(json, "slots_in_use", static_cast<std::uint64_t>(snapshot.atlas.slots_in_use));
+    field(json, "patterns_drawn", snapshot.avatars.patterns_drawn);
+    field(json, "paint_fallbacks", snapshot.avatars.paint_fallbacks);
+    field(json, "atlas_failures", snapshot.avatars.atlas_failures);
     field(json, "bytes", snapshot.atlas_bytes);
     json.end_object();
     json.key("corpus");
@@ -239,10 +256,7 @@ void write_counters(JsonWriter& json, const CounterSnapshot& snapshot) {
     field(json, "erased_rows", snapshot.root.erased_rows);
     field(json, "erase_operations", snapshot.root.erase_operations);
     field(json, "jumps", snapshot.root.jumps);
-    field(json, "drag_sessions", snapshot.root.drag_sessions);
-    field(json, "drag_scroll_steps", snapshot.root.drag_scroll_steps);
-    field(json, "drag_plans", snapshot.drag.plans);
-    field(json, "drag_previews", snapshot.drag.previews);
+    field(json, "scroll_reports", snapshot.root.scroll_reports);
     field(json, "badge_updates", snapshot.root.badge_updates);
     field(json, "status_updates", snapshot.root.status_updates);
     json.end_object();
@@ -252,22 +266,12 @@ void write_counters(JsonWriter& json, const CounterSnapshot& snapshot) {
     json.optional(snapshot.footprint_bytes);
     json.key("cpu_microseconds");
     json.optional(snapshot.cpu_microseconds);
-    json.key("heap_blocks_in_use");
-    if (snapshot.heap.has_value()) {
-        json.value((*snapshot.heap).blocks_in_use);
-    } else {
-        json.null();
-    }
-    json.key("heap_bytes_in_use");
-    if (snapshot.heap.has_value()) {
-        json.value((*snapshot.heap).bytes_in_use);
-    } else {
-        json.null();
-    }
-    // No public allocation counter exists (GAPS.md 6).
-    json.key("allocations");
-    json.null();
     json.end_object();
+    // GUI.Forms' own counted allocation paths (image resources, the atlas,
+    // effects, display chunks, damage lists, text layout), process-wide
+    // since start; its "scope" member says so. Not the process's allocations.
+    json.key("gui_forms_allocations");
+    json.raw(snapshot.allocations.to_json());
     json.key("window_metrics");
     json.raw(snapshot.metrics.to_json());
     json.end_object();

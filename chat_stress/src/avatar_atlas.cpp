@@ -1,5 +1,6 @@
 #include "avatar_atlas.hpp"
 
+#include <exception>
 #include <span>
 
 namespace chat_stress {
@@ -58,35 +59,11 @@ gf::Color hue_colour(std::uint16_t hue, std::uint32_t saturation, std::uint32_t 
     return colour;
 }
 
-AvatarAtlas::AvatarAtlas(std::uint32_t users) {
-    slots_.resize(slot_count);
-    slot_of_user_.resize(static_cast<std::size_t>(users) + 1U, 0U);
+AvatarAtlas::AvatarAtlas() {
     scratch_.resize(static_cast<std::size_t>(slot_pixels) * slot_pixels * bytes_per_pixel);
 }
 
-bool AvatarAtlas::create_image(gf::SurfaceRoot& root) {
-    // One transparent image; the zero buffer lives for this call only.
-    const std::size_t row_bytes = static_cast<std::size_t>(image_pixels) * bytes_per_pixel;
-    std::vector<std::byte> blank(row_bytes * image_pixels, std::byte{0});
-    const gf::ImageLoadResult loaded = root.load_bgra32_premultiplied(
-        image_pixels, image_pixels, row_bytes, std::span<const std::byte>(blank.data(), blank.size()));
-    if (loaded.error != gf::ImageResourceError::none) {
-        ++counters_.upload_failures;
-        return false;
-    }
-    image_ = loaded.image;
-    created_ = true;
-    return true;
-}
-
-std::uint32_t AvatarAtlas::least_recent_slot() const noexcept {
-    std::uint32_t chosen = 0U;
-    for (std::uint32_t slot = 0U; slot < slot_count; ++slot) {
-        if (!slots_[slot].used) return slot;
-        if (slots_[slot].last_use < slots_[chosen].last_use) chosen = slot;
-    }
-    return chosen;
-}
+AvatarAtlas::~AvatarAtlas() = default;
 
 void AvatarAtlas::draw_pattern(const UserRecord& record) {
     const gf::Color background = hue_colour(record.hue, 55U, 86U);
@@ -105,72 +82,69 @@ void AvatarAtlas::draw_pattern(const UserRecord& record) {
             put_pixel(scratch_, x, y, colour);
         }
     }
+    ++counters_.patterns_drawn;
 }
 
-bool AvatarAtlas::ensure(gf::SurfaceRoot& root, gf::Control& consumer, UserId user, const UserRecord& record) {
-    if (user.value >= slot_of_user_.size()) return false;
-    ++clock_;
-    const std::uint16_t held = slot_of_user_[user.value];
-    if (held != 0U) {
-        slots_[held - 1U].last_use = clock_;
-        ++counters_.hits;
-        return true;
+bool AvatarAtlas::ensure(gf::SurfaceRoot& root, UserId user, const UserRecord& record) {
+    if (atlas_ == nullptr) {
+        gf::ImageAtlasLayout layout{};
+        layout.slot_width = slot_pixels;
+        layout.slot_height = slot_pixels;
+        layout.slot_count = slot_count;
+        layout.gutter = 1U;
+        // The chat view is the only control drawing avatars.
+        layout.users_per_slot = 1U;
+        layout.replacement = gf::ImageAtlasReplacement::least_recently_used;
+        layout.pending_fills = gf::image_atlas_pending_every_slot;
+        try {
+            atlas_ = std::make_unique<gf::ImageAtlas>(root.resources(), layout);
+        } catch (const std::exception&) {
+            // Gone resources, another thread or the registry's quota: rows
+            // paint their fallback disc.
+            ++counters_.atlas_failures;
+            return false;
+        }
     }
-    ++counters_.misses;
-    if (!created_ && !create_image(root)) return false;
-    const std::uint32_t slot = least_recent_slot();
-    Slot& target = slots_[slot];
-    if (target.used) {
-        slot_of_user_[target.user.value] = 0U;
-        ++counters_.evictions;
-    }
-    draw_pattern(record);
-    const std::uint32_t x = (slot % columns) * slot_pixels;
-    const std::uint32_t y = (slot / columns) * slot_pixels;
-    const gf::ImageLoadResult patched = root.patch_bgra32_premultiplied(
-        image_, x, y, slot_pixels, slot_pixels, static_cast<std::uint64_t>(slot_pixels) * bytes_per_pixel,
-        std::span<const std::byte>(scratch_.data(), scratch_.size()), consumer, gf::Rect{});
-    if (patched.error != gf::ImageResourceError::none) {
-        target.used = false;
-        ++counters_.upload_failures;
+    const std::uint64_t key = user.value;
+    const gf::ImageAtlasAcquire acquired = (*atlas_).acquire(key);
+    if (acquired.outcome == gf::ImageAtlasAcquireOutcome::full) {
+        ++counters_.atlas_failures;
         return false;
     }
-    // A patch gives the image a new identity (the registry bumps its
-    // generation); the old one is stale from now on.
-    image_ = patched.image;
-    target.user = user;
-    target.used = true;
-    target.last_use = clock_;
-    slot_of_user_[user.value] = static_cast<std::uint16_t>(slot + 1U);
-    ++counters_.uploads;
-    return true;
+    // A hit whose earlier fill was refused is filled again.
+    const bool needs_fill = acquired.outcome != gf::ImageAtlasAcquireOutcome::hit || !(*atlas_).filled(acquired.slot);
+    if (!needs_fill) return true;
+    draw_pattern(record);
+    const gf::ImageAtlasError error =
+        (*atlas_).fill(acquired.slot, static_cast<std::uint64_t>(slot_pixels) * bytes_per_pixel,
+                       std::span<const std::byte>(scratch_.data(), scratch_.size()));
+    const bool accepted = error == gf::ImageAtlasError::none || error == gf::ImageAtlasError::deferred;
+    if (!accepted) ++counters_.atlas_failures;
+    return accepted;
 }
 
-std::optional<gf::Rect> AvatarAtlas::source_of(UserId user) {
-    if (user.value >= slot_of_user_.size()) return std::nullopt;
-    const std::uint16_t held = slot_of_user_[user.value];
-    if (held == 0U) return std::nullopt;
-    const std::uint32_t slot = held - 1U;
-    ++clock_;
-    slots_[slot].last_use = clock_;
-    const gf::Rect source{static_cast<double>((slot % columns) * slot_pixels),
-                          static_cast<double>((slot / columns) * slot_pixels), static_cast<double>(slot_pixels),
-                          static_cast<double>(slot_pixels)};
-    return source;
+bool AvatarAtlas::draw(gf::Painter& painter, gf::Control& consumer, UserId user, gf::Rect destination) {
+    if (atlas_ == nullptr) {
+        ++counters_.paint_fallbacks;
+        return false;
+    }
+    const gf::ImageAtlasSlot slot = (*atlas_).find(user.value);
+    const bool drawn = static_cast<bool>(slot) && (*atlas_).draw(painter, consumer, slot, destination);
+    if (!drawn) ++counters_.paint_fallbacks;
+    return drawn;
 }
 
-void AvatarAtlas::release(gf::SurfaceRoot& root) noexcept {
-    if (created_) static_cast<void>(root.remove_image(image_));
-    created_ = false;
-    image_ = gf::ImageId{};
-    for (Slot& slot : slots_) slot.used = false;
-    for (std::uint16_t& held : slot_of_user_) held = 0U;
+gf::ImageAtlasStatistics AvatarAtlas::statistics() const noexcept {
+    if (atlas_ == nullptr) return gf::ImageAtlasStatistics{};
+    return (*atlas_).statistics();
 }
 
 std::size_t AvatarAtlas::storage_bytes() const noexcept {
-    std::size_t bytes = slots_.capacity() * sizeof(Slot) + slot_of_user_.capacity() * sizeof(std::uint16_t) +
-                        scratch_.capacity();
-    if (created_) bytes += static_cast<std::size_t>(image_pixels) * image_pixels * bytes_per_pixel;
+    std::size_t bytes = scratch_.capacity();
+    if (atlas_ != nullptr) {
+        const gf::ImageAtlasStatistics statistics = (*atlas_).statistics();
+        bytes += static_cast<std::size_t>(statistics.image_bytes + statistics.table_bytes);
+    }
     return bytes;
 }
 

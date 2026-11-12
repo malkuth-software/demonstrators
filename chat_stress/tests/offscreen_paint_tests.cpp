@@ -26,7 +26,8 @@ using chat_stress_tests::require;
 namespace {
 
 std::optional<gf::WindowCapture> paint_once(gf::Application& application, gf::OffscreenRaster& raster,
-                                            chat_stress::AtlasCounters& atlas,
+                                            gf::ImageAtlasStatistics& atlas,
+                                            chat_stress::AvatarCounters& avatars,
                                             chat_stress::ChatRowsCounters& rows) {
     Corpus corpus(CorpusOptions{chat_stress::default_seed, 1'000'000U, 5'000U, false});
     std::shared_ptr<ChatRoot> root = gf::make_control<ChatRoot>(gf::StableId("chat-stress"), corpus);
@@ -40,9 +41,9 @@ std::optional<gf::WindowCapture> paint_once(gf::Application& application, gf::Of
         gf::OffscreenCaptureOptions options{};
         options.scale = 2.0;
         capture = attached.capture_window(options);
-        atlas = (*root).atlas().counters();
+        atlas = (*root).atlas().statistics();
+        avatars = (*root).atlas().counters();
         rows = (*root).rows().counters();
-        (*root).atlas().release(window);
     }
     return capture;
 }
@@ -60,18 +61,23 @@ int main() {
         std::unique_ptr<gf::OffscreenRaster> raster = made.take_raster();
         require(raster != nullptr, "the offscreen raster is made (set GUI_FORMS_FONT_DIR to the bundled fonts)");
 
-        chat_stress::AtlasCounters first_atlas{};
+        gf::ImageAtlasStatistics first_atlas{};
+        chat_stress::AvatarCounters first_avatars{};
         chat_stress::ChatRowsCounters first_rows{};
-        const std::optional<gf::WindowCapture> first = paint_once(*created.application, *raster, first_atlas, first_rows);
+        const std::optional<gf::WindowCapture> first =
+            paint_once(*created.application, *raster, first_atlas, first_avatars, first_rows);
         require(first.has_value() && !(*first).bgra.empty(), "the window is captured");
         require(first_rows.rows_painted > 0U && first_rows.lines_drawn > 0U, "rows and their lines are painted");
-        require(first_atlas.uploads > 0U, "avatars are drawn into the atlas");
-        require(first_atlas.paint_fallbacks == 0U, "every painted avatar came from the atlas");
+        require(first_atlas.fills > 0U && first_avatars.patterns_drawn > 0U, "avatars are filled into the atlas");
+        require(first_atlas.draws > 0U, "rows draw their avatars from the atlas");
+        require(first_avatars.paint_fallbacks == 0U, "every painted avatar came from the atlas");
+        require(first_avatars.atlas_failures == 0U, "the atlas accepted every fill");
 
-        chat_stress::AtlasCounters second_atlas{};
+        gf::ImageAtlasStatistics second_atlas{};
+        chat_stress::AvatarCounters second_avatars{};
         chat_stress::ChatRowsCounters second_rows{};
         const std::optional<gf::WindowCapture> second =
-            paint_once(*created.application, *raster, second_atlas, second_rows);
+            paint_once(*created.application, *raster, second_atlas, second_avatars, second_rows);
         require(second.has_value() && (*second).bgra == (*first).bgra, "the same seed paints the same pixels");
     } catch (const std::exception& failure) {
         std::fprintf(stderr, "offscreen_paint_tests: %s\n", failure.what());

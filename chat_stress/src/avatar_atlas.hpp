@@ -1,97 +1,78 @@
 #pragma once
 
 // The avatar atlas (CHAT_STRESS_SPEC section 3.3): generated avatars, a
-// symmetric 5 x 5 pattern in the user's hue, drawn into slots of one image
-// in the window's image registry, least recently used slot replaced.
-// Painted as image regions under a round clip; the initials are drawn as
-// text over the image at paint time.
+// symmetric 5 x 5 pattern in the user's hue, kept in a GUI.Forms ImageAtlas
+// (gui_forms/resources/image_atlas): 256 slots of 80 x 80 pixels, the least
+// recently used replaced by the atlas, each slot drawn under a round clip
+// with the initials over it.
 //
-// GUI.Forms has no public atlas or sprite-sheet facility (GAPS.md 5), so
-// this one is built on SurfaceRoot::load_bgra32_premultiplied (one image)
-// and SurfaceRoot::patch_bgra32_premultiplied (one slot at a time). A patch
-// takes a consumer control and damages it, so slots are filled while rows
-// are measured (layout), never during paint; a paint that finds no slot
-// draws a plain disc instead and counts it.
+// This object generates the pixels and keys the slots by user id; the
+// ImageAtlas keeps the slots, the backing image, the use order and the
+// damage of the controls that drew a slot. A slot is filled when its row
+// is measured; a fill made while a window paints is deferred by the atlas
+// and written when that paint ends. A row whose slot is not filled yet
+// paints a plain disc and is counted.
 //
-// One thread (the window's). The atlas owns its scratch pixels; the image
-// belongs to the window's registry and is removed in release().
+// Ownership: the ImageAtlas is made on first use with the window's
+// resources and owned here; it removes its image when this object goes.
+// One thread (the window's).
 
 #include "chat_types.hpp"
 #include "corpus.hpp"
 
 #include <gui_forms/control.hpp>
+#include <gui_forms/resources/image_atlas/image_atlas.hpp>
 #include <gui_forms/surface_root/surface_root.hpp>
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
+#include <memory>
 #include <vector>
 
 namespace chat_stress {
 
-struct AtlasCounters final {
-    std::uint64_t hits{};
-    std::uint64_t misses{};
-    std::uint64_t evictions{};
-    std::uint64_t uploads{};
-    std::uint64_t upload_failures{};
+// What this object counts beyond ImageAtlasStatistics (they only grow).
+struct AvatarCounters final {
+    std::uint64_t patterns_drawn{};
     std::uint64_t paint_fallbacks{};
+    std::uint64_t atlas_failures{};
 };
 
 class AvatarAtlas final {
 public:
     static constexpr std::uint32_t slot_count = 256U;
-    static constexpr std::uint32_t columns = 16U;
-    // 40 logical units at scale 2 (section 3.3): 1280 x 1280 pixels, 6.5 MB.
+    // 40 logical units at scale 2 (section 3.3).
     static constexpr std::uint32_t slot_pixels = 80U;
-    static constexpr std::uint32_t image_pixels = columns * slot_pixels;
 
-    // `users` is the corpus's user count (user ids 0..users).
-    explicit AvatarAtlas(std::uint32_t users);
+    AvatarAtlas();
+    ~AvatarAtlas();
     AvatarAtlas(const AvatarAtlas&) = delete;
     AvatarAtlas& operator=(const AvatarAtlas&) = delete;
 
-    // Makes sure `user` has a slot, drawing its pattern into the least
-    // recently used slot when it has none. `consumer` is the control the
-    // patch damages (the chat view). Creates the image on first use.
-    // Returns false when the registry refused the image or the patch (the
-    // row then paints its fallback disc).
-    bool ensure(gui_forms::SurfaceRoot& root, gui_forms::Control& consumer, UserId user, const UserRecord& record);
-    // The source rectangle of `user`'s slot in image pixels, marking it
-    // used; none when it has no slot.
-    [[nodiscard]] std::optional<gui_forms::Rect> source_of(UserId user);
-    // Counts a paint that found no slot.
-    void note_paint_fallback() noexcept { ++counters_.paint_fallbacks; }
+    // Makes sure `user` has a slot holding its pattern (or a deferred fill
+    // of it): acquires the slot and fills it when it was assigned or
+    // replaced. Makes the ImageAtlas with `root`'s resources on first use.
+    // False when the atlas could not be made or refused the fill.
+    bool ensure(gui_forms::SurfaceRoot& root, UserId user, const UserRecord& record);
+    // Draws `user`'s slot over `destination` for `consumer` (the chat view),
+    // which the atlas repaints when the slot changes. False, drawing
+    // nothing and counting a fallback, when the slot is missing or unfilled.
+    bool draw(gui_forms::Painter& painter, gui_forms::Control& consumer, UserId user, gui_forms::Rect destination);
 
-    [[nodiscard]] gui_forms::ImageId image() const noexcept { return image_; }
-    [[nodiscard]] bool created() const noexcept { return created_; }
-    // Removes the image from `root`'s registry and forgets every slot.
-    void release(gui_forms::SurfaceRoot& root) noexcept;
-
-    [[nodiscard]] AtlasCounters counters() const noexcept { return counters_; }
-    // The registry image's bytes plus the atlas's own tables.
+    [[nodiscard]] bool created() const noexcept { return atlas_ != nullptr; }
+    [[nodiscard]] AvatarCounters counters() const noexcept { return counters_; }
+    // The ImageAtlas's statistics; zero before it is made.
+    [[nodiscard]] gui_forms::ImageAtlasStatistics statistics() const noexcept;
+    // The backing image and the atlas's tables, plus this object's scratch.
     [[nodiscard]] std::size_t storage_bytes() const noexcept;
 
 private:
-    struct Slot final {
-        UserId user{};
-        std::uint64_t last_use{};
-        bool used{};
-    };
-
-    bool create_image(gui_forms::SurfaceRoot& root);
     // Writes `record`'s pattern into scratch_ (premultiplied BGRA, opaque).
     void draw_pattern(const UserRecord& record);
-    [[nodiscard]] std::uint32_t least_recent_slot() const noexcept;
 
-    gui_forms::ImageId image_{};
-    bool created_{};
-    std::uint64_t clock_{};
-    std::vector<Slot> slots_{};
-    // user id -> slot + 1, zero for none.
-    std::vector<std::uint16_t> slot_of_user_{};
+    std::unique_ptr<gui_forms::ImageAtlas> atlas_{};
     std::vector<std::byte> scratch_{};
-    AtlasCounters counters_{};
+    AvatarCounters counters_{};
 };
 
 // An opaque colour from a hue in degrees and lightness and saturation in

@@ -9,6 +9,7 @@
 #include "chat_view.hpp"
 #include "process_stats.hpp"
 
+#include <gui_forms/allocation/statistics/allocation_statistics.hpp>
 #include <gui_forms/metrics/types/metrics_types.hpp>
 #include <gui_forms/window/window.hpp>
 
@@ -61,11 +62,11 @@ struct CounterSnapshot final {
     gui_forms::VirtualRowsStatistics view{};
     ChatRowsCounters rows{};
     RingCounters ring{};
-    WrapCounters wrap{};
-    AtlasCounters atlas{};
+    TextLayoutCounters text{};
+    AvatarCounters avatars{};
+    gui_forms::ImageAtlasStatistics atlas{};
     CorpusCounters corpus{};
     ChatRootCounters root{};
-    gui_forms::DragTrackerStatistics drag{};
     gui_forms::MetricsSnapshot metrics{};
     std::uint64_t rows_total{};
     std::uint64_t semantic_children{};
@@ -75,7 +76,10 @@ struct CounterSnapshot final {
     std::size_t overlay_records{};
     std::optional<std::uint64_t> footprint_bytes{};
     std::optional<std::uint64_t> cpu_microseconds{};
-    std::optional<HeapReading> heap{};
+    // GUI.Forms' counted allocation paths, process-wide
+    // (allocation_statistics): never the process total.
+    gui_forms::AllocationStatistics allocations{};
+    std::size_t selected_rows{};
 };
 
 [[nodiscard]] CounterSnapshot read_counters(gui_forms::Window& window, ChatRoot& root);

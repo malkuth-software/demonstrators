@@ -1,7 +1,6 @@
 #include "chat_view.hpp"
 
 #include <gui_forms/event.hpp>
-#include <gui_forms/events/mouse_events/mouse_events.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -25,30 +24,17 @@ void append_count(std::string& out, std::uint64_t value) {
     if (written > 0) out.append(buffer, static_cast<std::size_t>(written));
 }
 
-RowIndex smaller(RowIndex left, RowIndex right) noexcept {
-    if (right < left) return right;
-    return left;
-}
-
-RowIndex larger(RowIndex left, RowIndex right) noexcept {
-    if (left < right) return right;
-    return left;
-}
-
 } // namespace
 
 ChatRoot::ChatRoot(gf::StableId stable_id, Corpus& corpus)
-    : gf::Control(std::move(stable_id)), corpus_(corpus), atlas_(corpus.user_count()), rows_(corpus, atlas_),
-      menu_("chat-stress.menu") {
+    : gf::Control(std::move(stable_id)), corpus_(corpus), rows_(corpus, atlas_), menu_("chat-stress.menu") {
     status_text_.reserve(256U);
-    drag_announcement_.reserve(64U);
 }
 
 ChatRoot::~ChatRoot() {
     // The view may outlive this control (a shared child): unbind the row
     // painter's targets before the painter goes.
     rows_.detach();
-    drag_.reset();
 }
 
 void ChatRoot::initialize_control_tree() {
@@ -64,6 +50,8 @@ void ChatRoot::initialize_control_tree() {
     // header row with the mean 550-byte body at about 75 bytes a line.
     (*view_).set_estimated_row_height(120.0);
     (*view_).set_follow_tail(true);
+    (*view_).set_measured_row_budget(measured_row_budget);
+    (*view_).set_selection_mode(gf::ListSelectionMode::multiple_extended);
     (*view_).reset_rows(static_cast<std::size_t>(corpus_.row_count()));
     rows_.attach(*view_);
 
@@ -77,21 +65,8 @@ void ChatRoot::initialize_control_tree() {
     gf::on((*view_).row_activated(), *this, &ChatRoot::on_row_activated);
     gf::on((*view_).selection_changed(), *this, &ChatRoot::on_selection_changed);
     gf::on((*view_).context_menu_requested(), *this, &ChatRoot::on_context_request);
-    gf::on((*view_).mouse_down(), *this, &ChatRoot::on_view_mouse_down);
-    gf::on((*view_).mouse_move(), *this, &ChatRoot::on_view_mouse_move);
-    gf::on((*view_).mouse_up(), *this, &ChatRoot::on_view_mouse_up);
-    gf::on((*view_).mouse_wheel(), *this, &ChatRoot::on_view_wheel);
-    gf::on((*view_).key_down(), *this, &ChatRoot::on_view_key);
+    gf::on((*view_).scrolled(), *this, &ChatRoot::on_view_scrolled);
     gf::on(menu_.item_invoked(), *this, &ChatRoot::on_menu_item);
-
-    drag_ = std::make_unique<gf::DragTracker>(*this);
-    gf::DragTrackerCallbacks callbacks{};
-    callbacks.plan = gf::Delegate<gf::DragPlan&>::bind<ChatRoot, &ChatRoot::plan_drag>(*this);
-    callbacks.preview = gf::Delegate<const gf::DragTrackerFrame&>::bind<ChatRoot, &ChatRoot::preview_drag>(*this);
-    callbacks.finished = gf::Delegate<const gf::DragTrackerFrame&>::bind<ChatRoot, &ChatRoot::finish_drag>(*this);
-    callbacks.announce = gf::Delegate<gf::DragAnnouncementRequest&>::bind<ChatRoot, &ChatRoot::announce_drag>(*this);
-    callbacks.scroll = gf::Delegate<gf::DragAutoScrollStep&>::bind<ChatRoot, &ChatRoot::scroll_drag>(*this);
-    (*drag_).callbacks = callbacks;
     rebuild_menu(std::nullopt);
     refresh_status();
 }
@@ -165,7 +140,8 @@ void ChatRoot::edit_row(RowIndex row, const std::string& text) {
     const MessageId message = corpus_.message_of_row(row);
     corpus_.edit(message, text, now_ms());
     rows_.forget(message);
-    (*view_).refresh_rows(gf::VirtualRowIndex{static_cast<std::size_t>(row.value)}, 1U);
+    // Measured again at once when in view (the anchor holds) and repainted.
+    (*view_).invalidate_rows(gf::VirtualRowIndex{static_cast<std::size_t>(row.value)}, 1U);
     ++counters_.edits;
     refresh_status();
 }
@@ -175,7 +151,7 @@ void ChatRoot::delete_row(RowIndex row) {
     const MessageId message = corpus_.message_of_row(row);
     corpus_.tombstone(message, now_ms());
     rows_.forget(message);
-    (*view_).refresh_rows(gf::VirtualRowIndex{static_cast<std::size_t>(row.value)}, 1U);
+    (*view_).invalidate_rows(gf::VirtualRowIndex{static_cast<std::size_t>(row.value)}, 1U);
     ++counters_.deletions;
     refresh_status();
 }
@@ -188,9 +164,8 @@ void ChatRoot::erase_rows(RowIndex first, std::uint64_t count) {
     (*view_).erase_rows(gf::VirtualRowIndex{static_cast<std::size_t>(first.value)}, static_cast<std::size_t>(erased));
     // The row now at `first` has a new predecessor: its header may change.
     if (first.value < corpus_.row_count()) {
-        (*view_).refresh_rows(gf::VirtualRowIndex{static_cast<std::size_t>(first.value)}, 1U);
+        (*view_).invalidate_rows(gf::VirtualRowIndex{static_cast<std::size_t>(first.value)}, 1U);
     }
-    if (rows_.range().has_value()) rows_.set_range(std::nullopt);
     counters_.erased_rows += erased;
     ++counters_.erase_operations;
     refresh_status();
@@ -227,7 +202,7 @@ void ChatRoot::update_badge() {
 void ChatRoot::refresh_status() {
     const gf::VirtualRowsStatistics statistics = (*view_).statistics();
     const RingCounters ring = rows_.ring_counters();
-    const AtlasCounters atlas = atlas_.counters();
+    const gf::ImageAtlasStatistics atlas = atlas_.statistics();
     status_text_.clear();
     append_count(status_text_, corpus_.row_count());
     status_text_.append(" messages | measured ");
@@ -236,6 +211,8 @@ void ChatRoot::refresh_status() {
     append_count(status_text_, statistics.index_runs);
     status_text_.append(" depth ");
     append_count(status_text_, statistics.index_depth);
+    status_text_.append(" | index bytes ");
+    append_count(status_text_, statistics.index_bytes);
     status_text_.append(" | ring ");
     append_count(status_text_, ring.hits);
     status_text_.push_back('/');
@@ -243,17 +220,18 @@ void ChatRoot::refresh_status() {
     status_text_.append(" | avatars ");
     append_count(status_text_, atlas.hits);
     status_text_.push_back('/');
-    append_count(status_text_, atlas.misses);
+    append_count(status_text_, atlas.assignments + atlas.replacements);
     status_text_.push_back('/');
-    append_count(status_text_, atlas.evictions);
+    append_count(status_text_, atlas.replacements);
+    const std::size_t selected = (*view_).selected_row_count();
+    if (selected > 1U) {
+        status_text_.append(" | ");
+        append_count(status_text_, selected);
+        status_text_.append(" selected");
+    }
     if ((*view_).following_tail()) status_text_.append(" | following");
     (*status_).text = status_text_;
     ++counters_.status_updates;
-}
-
-gf::DragTrackerStatistics ChatRoot::drag_statistics() const noexcept {
-    if (drag_ == nullptr) return gf::DragTrackerStatistics{};
-    return (*drag_).statistics();
 }
 
 // -- compose box --------------------------------------------------------------------
@@ -312,7 +290,7 @@ void ChatRoot::rebuild_menu(std::optional<RowIndex> row) {
     gf::MenuItemSpec remove(std::string(menu_delete), gf::MenuItemKind::command, {}, "Delete message");
     remove.enabled = live;
     gf::MenuItemSpec none(std::string(menu_select_none), gf::MenuItemKind::command, {}, "Select none");
-    none.enabled = rows_.range().has_value() || (*view_).selected_row().has_value();
+    none.enabled = (*view_).selected_row_count() > 0U;
     items.push_back(std::move(edit));
     items.push_back(std::move(remove));
     items.push_back(std::move(none));
@@ -344,9 +322,7 @@ void ChatRoot::on_context_request(gf::ContextMenuRequest& request) {
 
 void ChatRoot::on_menu_item(const gf::MenuItemInvocation& invocation) {
     if (invocation.item_id == menu_select_none) {
-        rows_.set_range(std::nullopt);
-        (*view_).set_selected_row(std::nullopt);
-        (*view_).invalidate((*view_).viewport_bounds());
+        (*view_).clear_selection();
         return;
     }
     if (!menu_row_.has_value()) return;
@@ -360,109 +336,12 @@ void ChatRoot::on_menu_item(const gf::MenuItemInvocation& invocation) {
     }
 }
 
-void ChatRoot::on_view_wheel(const gf::MouseEventArgs& arguments) {
-    static_cast<void>(arguments);
+void ChatRoot::on_view_scrolled(const gf::VirtualRowScroll& scroll) {
+    // Back at the end (by wheel, keys, the scroll bar or a drag), the badge
+    // clears; anywhere else it keeps counting.
+    static_cast<void>(scroll);
+    ++counters_.scroll_reports;
     update_badge();
-}
-
-void ChatRoot::on_view_key(gf::KeyEventArgs& arguments) {
-    static_cast<void>(arguments);
-    update_badge();
-}
-
-// -- drag selection -------------------------------------------------------------------
-
-gf::Rect ChatRoot::viewport_in_window() const {
-    const gf::Rect window_rectangle = (*view_).rectangle_to_window((*view_).viewport_bounds());
-    return window_rectangle;
-}
-
-std::optional<RowIndex> ChatRoot::row_at_window_point(gf::Point window_point) const {
-    const gf::Rect viewport = (*view_).viewport_bounds();
-    gf::Point local = (*view_).point_from_window(window_point);
-    if (viewport.height <= 0.0) return std::nullopt;
-    const double top = viewport.y;
-    const double bottom = viewport.y + viewport.height - 0.5;
-    if (local.y < top) local.y = top;
-    if (local.y > bottom) local.y = bottom;
-    if (local.x < viewport.x) local.x = viewport.x;
-    if (local.x > viewport.x + viewport.width - 0.5) local.x = viewport.x + viewport.width - 0.5;
-    const std::optional<gf::VirtualRowIndex> hit = (*view_).row_at(local);
-    if (!hit.has_value()) return std::nullopt;
-    const RowIndex row{(*hit).value};
-    return row;
-}
-
-void ChatRoot::on_view_mouse_down(const gf::MouseEventArgs& arguments) {
-    // The view has selected the pressed row already; a press that moves on
-    // past the drag threshold becomes a range selection.
-    if (arguments.button != gf::PointerButton::primary || arguments.clicks > 1U) return;
-    const std::optional<RowIndex> row = row_at_window_point(arguments.window_position);
-    if (!row.has_value()) return;
-    drag_anchor_ = *row;
-    gf::DragStart start{};
-    start.subject = view_.get();
-    start.key = (*row).value;
-    start.threshold = gf::default_drag_threshold;
-    const gf::DragStartResult started = (*drag_).press(gf::pointer_event_of(arguments), start);
-    if (started == gf::DragStartResult::armed || started == gf::DragStartResult::started) ++counters_.drag_sessions;
-}
-
-void ChatRoot::on_view_mouse_move(const gf::MouseEventArgs& arguments) {
-    if (!(*drag_).running()) return;
-    static_cast<void>((*drag_).pointer(gf::pointer_event_of(arguments)));
-}
-
-void ChatRoot::on_view_mouse_up(const gf::MouseEventArgs& arguments) {
-    if (!(*drag_).running()) return;
-    static_cast<void>((*drag_).pointer(gf::pointer_event_of(arguments)));
-}
-
-void ChatRoot::plan_drag(gf::DragPlan& plan) {
-    const gf::Rect viewport = viewport_in_window();
-    plan.kind = gf::DragKind::placement;
-    plan.placement.bounds = viewport;
-    plan.placement.free_drop = true;
-    plan.placement.grid = gf::Size{};
-    plan.auto_scroll.viewport = viewport;
-    plan.container = view_.get();
-}
-
-void ChatRoot::preview_drag(const gf::DragTrackerFrame& frame) {
-    const std::optional<RowIndex> row = row_at_window_point(frame.pointer);
-    if (!row.has_value()) return;
-    const RowRange range{smaller(drag_anchor_, *row), larger(drag_anchor_, *row)};
-    const std::optional<RowRange> before = rows_.range();
-    const bool same = before.has_value() && (*before).first == range.first && (*before).last == range.last;
-    if (same) return;
-    rows_.set_range(range);
-    (*view_).invalidate((*view_).viewport_bounds());
-}
-
-void ChatRoot::finish_drag(const gf::DragTrackerFrame& frame) {
-    if (!gf::drag_end_commits(frame.end)) {
-        rows_.set_range(std::nullopt);
-        (*view_).invalidate((*view_).viewport_bounds());
-    }
-    refresh_status();
-}
-
-void ChatRoot::announce_drag(gf::DragAnnouncementRequest& request) {
-    drag_announcement_.clear();
-    const std::optional<RowRange> range = rows_.range();
-    if (range.has_value()) {
-        append_count(drag_announcement_, (*range).last.value - (*range).first.value + 1U);
-        drag_announcement_.append(" messages selected");
-    }
-    request.text = drag_announcement_;
-}
-
-void ChatRoot::scroll_drag(gf::DragAutoScrollStep& step) {
-    const double before = (*view_).scroll_offset();
-    (*view_).scroll_to_offset(before + step.requested.y);
-    const double after = (*view_).scroll_offset();
-    step.applied = gf::Point{0.0, after - before};
-    if (after != before) ++counters_.drag_scroll_steps;
 }
 
 } // namespace chat_stress

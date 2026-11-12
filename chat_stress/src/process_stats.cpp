@@ -7,7 +7,6 @@
 #if defined(__APPLE__)
 #include <libproc.h>
 #include <mach/mach.h>
-#include <malloc/malloc.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -18,7 +17,6 @@
 #include <windows.h>
 #include <psapi.h>
 #elif defined(__linux__)
-#include <malloc.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -163,30 +161,6 @@ std::optional<std::int64_t> process_start_unix_microseconds() {
     const std::int64_t start = boot_seconds * 1'000'000 +
                                static_cast<std::int64_t>(ticks) * 1'000'000 / static_cast<std::int64_t>(ticks_per_second);
     return start;
-#else
-    return std::nullopt;
-#endif
-}
-
-std::optional<HeapReading> heap_in_use() {
-#if defined(__APPLE__)
-    vm_address_t* zones = nullptr;
-    unsigned int zone_count = 0U;
-    if (malloc_get_all_zones(mach_task_self(), nullptr, &zones, &zone_count) != KERN_SUCCESS) return std::nullopt;
-    HeapReading reading{};
-    for (unsigned int zone = 0U; zone < zone_count; ++zone) {
-        malloc_statistics_t statistics{};
-        malloc_zone_statistics(reinterpret_cast<malloc_zone_t*>(zones[zone]), &statistics);
-        reading.blocks_in_use += statistics.blocks_in_use;
-        reading.bytes_in_use += statistics.size_in_use;
-    }
-    return reading;
-#elif defined(__linux__) && defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
-    const struct mallinfo2 info = mallinfo2();
-    HeapReading reading{};
-    reading.blocks_in_use = static_cast<std::uint64_t>(info.hblks);
-    reading.bytes_in_use = static_cast<std::uint64_t>(info.uordblks + info.hblkhd);
-    return reading;
 #else
     return std::nullopt;
 #endif

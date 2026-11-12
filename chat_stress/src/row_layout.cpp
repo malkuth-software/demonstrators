@@ -1,6 +1,5 @@
 #include "row_layout.hpp"
 
-#include <optional>
 #include <span>
 #include <stdexcept>
 
@@ -10,157 +9,65 @@ namespace gf = gui_forms;
 
 namespace {
 
-constexpr unsigned char continuation_mask = 0xC0U;
-constexpr unsigned char continuation_bits = 0x80U;
-
-bool is_break(gf::LineBreakOpportunity opportunity) noexcept {
-    const bool breaks =
-        opportunity == gf::LineBreakOpportunity::allowed || opportunity == gf::LineBreakOpportunity::mandatory;
-    return breaks;
-}
-
-bool is_space(char byte) noexcept {
-    const bool space = byte == ' ' || byte == '\n' || byte == '\r' || byte == '\t';
-    return space;
-}
-
-bool starts_character(std::string_view text, std::size_t position) noexcept {
-    if (position >= text.size()) return true;
-    const unsigned char byte = static_cast<unsigned char>(text[position]);
-    const bool starts = (byte & continuation_mask) != continuation_bits;
-    return starts;
-}
-
-// The end of [begin, end) with trailing spaces dropped, never before begin.
-std::size_t trim_end(std::string_view text, std::size_t begin, std::size_t end) noexcept {
-    std::size_t visible = end;
-    while (visible > begin && is_space(text[visible - 1U])) --visible;
-    return visible;
-}
+constexpr std::size_t scratch_bytes_per_byte = sizeof(gf::LineBreakOpportunity) + sizeof(double);
+// One call, and one more after growing to what the first said it needs
+// (storage of the stated sizes always succeeds).
+constexpr int layout_attempts = 2;
 
 } // namespace
 
-// -- TextWrapper ------------------------------------------------------------------
+// -- ParagraphWrapper -------------------------------------------------------------
 
-TextWrapper::TextWrapper(std::size_t capacity) { opportunities_.reserve(capacity); }
-
-double TextWrapper::measure(const gf::SurfaceRoot* root, std::string_view text, gf::FontSpec font) {
-    ++counters_.measure_calls;
-    counters_.measured_bytes += text.size();
-    if (root != nullptr) {
-        const gf::TextExtent extent = (*root).measure_text_extent_utf8(text, font);
-        return extent.logical_size.width;
-    }
-    const gf::ResolvedTextLayout estimate = gf::estimate_text_layout_utf8(text, font);
-    return estimate.logical_size.width;
+ParagraphWrapper::ParagraphWrapper(std::size_t text_capacity) {
+    buffers_.reserve(text_capacity, 0U);
+    per_byte_capacity_ = text_capacity;
+    storage_bytes_ = text_capacity * scratch_bytes_per_byte;
 }
 
-std::size_t TextWrapper::break_inside(const gf::SurfaceRoot* root, std::string_view text, std::size_t begin,
-                                      std::size_t limit, gf::FontSpec font, double width) {
-    // The first character always goes on the line.
-    std::size_t first_end = begin + 1U;
-    while (first_end < limit && !starts_character(text, first_end)) ++first_end;
-    std::size_t low = first_end;   // fits (by rule)
-    std::size_t high = limit;      // may not fit
-    // Binary search over byte positions, snapped to character starts.
-    while (low < high) {
-        std::size_t middle = low + (high - low + 1U) / 2U;
-        while (middle > low && !starts_character(text, middle)) --middle;
-        if (middle == low) break;
-        const double run = measure(root, text.substr(begin, middle - begin), font);
-        if (run <= width) {
-            low = middle;
-        } else {
-            high = middle - 1U;
-            while (high > low && !starts_character(text, high)) --high;
-        }
-    }
-    ++counters_.inside_word_breaks;
-    return low;
-}
-
-std::size_t TextWrapper::wrap(const gf::SurfaceRoot* root, std::string_view text, gf::FontSpec font, double width,
-                              std::vector<WrappedLine>& lines) {
-    lines.clear();
+LaidOutParagraph ParagraphWrapper::lay_out(gf::TextMetricsProvider* provider, std::string_view text,
+                                           const gf::ParagraphStyle& style, std::vector<gf::ParagraphLine>& lines) {
     ++counters_.paragraphs;
-    const std::size_t size = text.size();
-    if (size == 0U) return 0U;
-    opportunities_.resize(size);
-    const std::span<gf::LineBreakOpportunity> opportunities(opportunities_.data(), size);
-    gf::TextResolutionStatus status = gf::TextResolutionStatus::invalid_request;
-    if (root != nullptr) {
-        status = (*root).fill_line_break_opportunities_utf8(text, opportunities);
-    } else {
-        status = gf::estimate_line_break_opportunities_utf8(text, opportunities);
-    }
-    if (status == gf::TextResolutionStatus::invalid_request) {
-        // Invalid UTF-8 (the corpus never makes it; typed text is checked by
-        // the text box): one unbreakable run, broken inside by width.
-        for (std::size_t byte = 0U; byte + 1U < size; ++byte) {
-            opportunities_[byte] = gf::LineBreakOpportunity::prohibited;
+    LaidOutParagraph result{};
+    for (int attempt = 0; attempt < layout_attempts; ++attempt) {
+        // The scratch is the shared buffers'; the line records are the slot's.
+        gf::ParagraphStorage storage = buffers_.storage();
+        storage.lines = std::span<gf::ParagraphLine>(lines.data(), lines.size());
+        const gf::ParagraphLayoutResult laid = gf::lay_out_paragraph(provider, text, style, storage);
+        const gf::ParagraphMetrics* metrics = laid.metrics();
+        if (metrics != nullptr) {
+            result.line_count = (*metrics).line_count;
+            result.height = (*metrics).height;
+            counters_.lines += (*metrics).line_count;
+            counters_.shaping_calls += (*metrics).shaping_calls;
+            counters_.shaped_bytes += (*metrics).shaped_bytes;
+            counters_.overflowing_lines += (*metrics).overflowing_lines;
+            return result;
         }
-        opportunities_[size - 1U] = gf::LineBreakOpportunity::mandatory;
-    }
-
-    std::size_t line_start = 0U;
-    while (line_start < size) {
-        while (line_start < size && text[line_start] == ' ') ++line_start;
-        if (line_start >= size) break;
-        std::size_t fit_end = 0U;
-        std::size_t fit_visible = 0U;
-        double fit_width = 0.0;
-        std::size_t first_candidate = size;
-        for (std::size_t byte = line_start; byte < size; ++byte) {
-            const gf::LineBreakOpportunity opportunity = opportunities_[byte];
-            if (!is_break(opportunity)) continue;
-            const std::size_t candidate_end = byte + 1U;
-            if (first_candidate == size) first_candidate = candidate_end;
-            const std::size_t visible = trim_end(text, line_start, candidate_end);
-            const double run = measure(root, text.substr(line_start, visible - line_start), font);
-            if (run > width) break;
-            fit_end = candidate_end;
-            fit_visible = visible;
-            fit_width = run;
-            if (opportunity == gf::LineBreakOpportunity::mandatory) break;
+        const gf::ParagraphStorageRequirement* required = laid.required_storage();
+        if (required == nullptr) break;
+        ++counters_.storage_retries;
+        if ((*required).per_byte > per_byte_capacity_) {
+            buffers_.reserve((*required).per_byte, 0U);
+            per_byte_capacity_ = (*required).per_byte;
+            storage_bytes_ = per_byte_capacity_ * scratch_bytes_per_byte;
         }
-        WrappedLine line{};
-        if (fit_end == 0U) {
-            // The first run alone is wider than the line: break inside it.
-            const std::size_t limit = trim_end(text, line_start, first_candidate);
-            std::size_t end = limit;
-            if (limit > line_start) end = break_inside(root, text, line_start, limit, font, width);
-            if (end <= line_start) end = first_candidate;   // a run of spaces only
-            line.begin = static_cast<std::uint32_t>(line_start);
-            line.end = static_cast<std::uint32_t>(end);
-            line.width = measure(root, text.substr(line_start, end - line_start), font);
-            line_start = end;
-        } else {
-            line.begin = static_cast<std::uint32_t>(line_start);
-            line.end = static_cast<std::uint32_t>(fit_visible);
-            line.width = fit_width;
-            line_start = fit_end;
-        }
-        lines.push_back(line);
-        ++counters_.lines;
+        if ((*required).lines > lines.size()) lines.resize((*required).lines);
     }
-    return lines.size();
+    ++counters_.refusals;
+    return result;
 }
 
-std::size_t TextWrapper::storage_bytes() const noexcept {
-    const std::size_t bytes = opportunities_.capacity() * sizeof(gf::LineBreakOpportunity);
-    return bytes;
-}
-
-gf::LineBoxMetrics font_line_box(const gf::SurfaceRoot* root, gf::FontSpec font) {
-    constexpr std::string_view probe = "Hg";
-    if (root != nullptr) {
-        const gf::ResolvedTextLayout layout = (*root).resolve_text_layout_utf8(probe, font);
-        const gf::LineBoxMetrics metrics = gf::line_box_metrics(layout, std::nullopt);
-        return metrics;
-    }
-    const gf::ResolvedTextLayout estimate = gf::estimate_text_layout_utf8(probe, font);
-    const gf::LineBoxMetrics metrics = gf::line_box_metrics(estimate, std::nullopt);
-    return metrics;
+gf::ParagraphStyle body_style(const RowFonts& fonts, double text_width) noexcept {
+    gf::ParagraphStyle style{};
+    style.font = fonts.body;
+    style.line_box = fonts.body_line;
+    style.width = text_width;
+    style.white_space = gf::ParagraphWhiteSpace::preserve_line_ends;
+    style.overflow_wrap = gf::ParagraphOverflowWrap::break_word;
+    style.fit = gf::ParagraphFit::verified;
+    style.alignment = gf::TextAlignment::start;
+    style.direction = gf::TextDirection::left_to_right;
+    return style;
 }
 
 double RowGeometry::text_width(double row_width) noexcept {
@@ -176,7 +83,7 @@ RowLayoutRing::RowLayoutRing(std::size_t capacity, std::size_t text_capacity) {
     entries_.resize(capacity);
     for (RowLayoutEntry& entry : entries_) {
         entry.text.reserve(text_capacity);
-        entry.lines.reserve(reserved_lines);
+        entry.lines.resize(reserved_lines);
     }
 }
 
@@ -211,7 +118,7 @@ std::size_t RowLayoutRing::storage_bytes() const noexcept {
     std::size_t bytes = entries_.capacity() * sizeof(RowLayoutEntry);
     for (const RowLayoutEntry& entry : entries_) {
         bytes += entry.text.capacity();
-        bytes += entry.lines.capacity() * sizeof(WrappedLine);
+        bytes += entry.lines.capacity() * sizeof(gf::ParagraphLine);
     }
     return bytes;
 }

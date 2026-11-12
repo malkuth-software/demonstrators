@@ -71,8 +71,8 @@ void write_samples(JsonWriter& json, const std::vector<FrameSample>& samples) {
         json.value(sample.frames_presented);
         json.key("painted_area");
         json.value(sample.painted_area);
-        json.key("text_measure_calls");
-        json.value(sample.text_measure_calls);
+        json.key("text_shaping_calls");
+        json.value(sample.text_shaping_calls);
         json.key("ring_misses");
         json.value(sample.ring_misses);
         json.key("timestamp_hash_calls");
@@ -81,6 +81,12 @@ void write_samples(JsonWriter& json, const std::vector<FrameSample>& samples) {
         json.value(sample.semantic_children);
         json.key("index_runs");
         json.value(sample.index_runs);
+        json.key("index_bytes");
+        json.value(sample.index_bytes);
+        json.key("gui_forms_allocations");
+        json.value(sample.gui_forms_allocations);
+        json.key("gui_forms_allocated_bytes");
+        json.value(sample.gui_forms_allocated_bytes);
         json.end_object();
     }
     json.end_array();
@@ -459,7 +465,8 @@ void WorkloadDriver::record_sample() {
     last_tick_ = now;
     CounterSnapshot current{};
     current.view = root_.view().statistics();
-    current.wrap = root_.rows().wrap_counters();
+    current.text = root_.rows().text_counters();
+    current.allocations = gf::allocation_statistics();
     current.ring = root_.rows().ring_counters();
     current.corpus = root_.corpus().counters();
     current.metrics = window_.metrics_snapshot();
@@ -469,11 +476,16 @@ void WorkloadDriver::record_sample() {
     sample.scroll_repaints = current.view.scroll_repaints - previous_.view.scroll_repaints;
     sample.frames_presented = current.metrics.frames_presented - previous_.metrics.frames_presented;
     sample.painted_area = current.metrics.painted_damage_area - previous_.metrics.painted_damage_area;
-    sample.text_measure_calls = current.wrap.measure_calls - previous_.wrap.measure_calls;
+    sample.text_shaping_calls = current.text.shaping_calls - previous_.text.shaping_calls;
     sample.ring_misses = current.ring.misses - previous_.ring.misses;
     sample.timestamp_hash_calls = current.corpus.timestamp_hash_calls - previous_.corpus.timestamp_hash_calls;
     sample.semantic_children = root_.view().realized_item_count();
     sample.index_runs = current.view.index_runs;
+    sample.index_bytes = current.view.index_bytes;
+    const gf::AllocationCounts allocated_now = current.allocations.total();
+    const gf::AllocationCounts allocated_before = previous_.allocations.total();
+    sample.gui_forms_allocations = allocated_now.allocations - allocated_before.allocations;
+    sample.gui_forms_allocated_bytes = allocated_now.allocated_bytes - allocated_before.allocated_bytes;
     if (samples_.size() < samples_.capacity()) samples_.push_back(sample);
     previous_ = current;
 }

@@ -1,20 +1,20 @@
 #pragma once
 
-// Row layout for the chat log (CHAT_STRESS_SPEC section 4.3): wrapping a
-// message's body at the column width with GUI.Forms' text metrics, the row
-// geometry, and the bounded ring of row layouts the view keeps for the rows
-// in and near the viewport.
+// Row layout for the chat log (CHAT_STRESS_SPEC section 4.3): a message's
+// body wrapped at the column width by GUI.Forms' public paragraph layout
+// (gui_forms/text/paragraph_layout: lay_out_paragraph into caller storage),
+// the row geometry, and the bounded ring of row layouts kept for the rows in
+// and near the viewport.
 //
-// Public API used: SurfaceRoot::fill_line_break_opportunities_utf8,
-// SurfaceRoot::measure_text_extent_utf8, SurfaceRoot::resolve_text_layout_utf8,
-// line_box_metrics, and the renderer-free estimates for a window without a
-// text engine. GUI.Forms has no public "wrap this paragraph into my
-// storage" call (TextBlock's breaker is private), so the greedy breaker
-// below re-measures each candidate line; GAPS.md 3 records what that costs.
+// Storage: the paragraph scratch (break opportunities and cluster advances,
+// one element per byte) is one ParagraphBuffers reserved for the longest
+// message; each ring slot owns its line records, reserved once, and the
+// layout writes into them directly. A layout that needs more lines than a
+// slot holds grows that slot once and lays out again (counted).
 
 #include "chat_types.hpp"
 
-#include <gui_forms/surface_root/surface_root.hpp>
+#include <gui_forms/text/paragraph_layout/paragraph_layout.hpp>
 #include <gui_forms/typography/types/typography_types.hpp>
 
 #include <cstddef>
@@ -25,60 +25,52 @@
 
 namespace chat_stress {
 
-// One wrapped line: a byte range of the row's text, trailing spaces
-// excluded, and its measured width in logical units.
-struct WrappedLine final {
-    std::uint32_t begin{};
-    std::uint32_t end{};
-    double width{};
-};
-
-// The wrapper's work counters (they only grow).
-struct WrapCounters final {
+// The paragraph layout's work, summed over every call (they only grow).
+// shaping_calls and shaped_bytes are ParagraphMetrics' own figures.
+struct TextLayoutCounters final {
     std::uint64_t paragraphs{};
     std::uint64_t lines{};
-    std::uint64_t measure_calls{};
-    std::uint64_t measured_bytes{};
-    std::uint64_t inside_word_breaks{};
+    std::uint64_t shaping_calls{};
+    std::uint64_t shaped_bytes{};
+    std::uint64_t overflowing_lines{};
+    // Calls repeated after growing storage (storage_too_small), and refused
+    // calls (invalid UTF-8 or font; the row then shows no body lines).
+    std::uint64_t storage_retries{};
+    std::uint64_t refusals{};
 };
 
-// Greedy line breaking at the window's break opportunities (UAX #14 with the
-// bundled engine, white space with the estimate). A word wider than the line
-// is broken inside, at the longest character prefix that fits (at least one
-// character), as the spec's long URLs need.
-class TextWrapper final {
+// One paragraph's layout into a slot's line records.
+struct LaidOutParagraph final {
+    std::size_t line_count{};
+    double height{};
+};
+
+// The paragraph scratch and the layout call with its retry. One thread.
+class ParagraphWrapper final {
 public:
-    // Reserves the opportunity scratch for a text of `capacity` bytes.
-    explicit TextWrapper(std::size_t capacity);
+    // Reserves the scratch for texts up to `text_capacity` bytes.
+    explicit ParagraphWrapper(std::size_t text_capacity);
 
-    // Fills `lines` (cleared first, capacity reused) with `text` wrapped at
-    // `width` in `font`, measured by `root` (null: the renderer-free
-    // estimate). Returns the line count: zero for an empty text. A width
-    // that is not positive puts each break opportunity's run on its own line.
-    std::size_t wrap(const gui_forms::SurfaceRoot* root, std::string_view text, gui_forms::FontSpec font,
-                     double width, std::vector<WrappedLine>& lines);
+    // Lays `text` out in `style` into `lines` (resized only when a layout
+    // needs more records than it has), through `provider` (null: the
+    // renderer-free estimates). A refused request leaves zero lines.
+    LaidOutParagraph lay_out(gui_forms::TextMetricsProvider* provider, std::string_view text,
+                             const gui_forms::ParagraphStyle& style, std::vector<gui_forms::ParagraphLine>& lines);
 
-    // One run's width (counted as a measure call).
-    [[nodiscard]] double measure(const gui_forms::SurfaceRoot* root, std::string_view text, gui_forms::FontSpec font);
-
-    [[nodiscard]] WrapCounters counters() const noexcept { return counters_; }
-    [[nodiscard]] std::size_t storage_bytes() const noexcept;
+    [[nodiscard]] TextLayoutCounters counters() const noexcept { return counters_; }
+    // The scratch's bytes at capacity.
+    [[nodiscard]] std::size_t storage_bytes() const noexcept { return storage_bytes_; }
 
 private:
-    // The end (exclusive) of the longest character prefix of
-    // [begin, limit) that fits `width`, at least one character.
-    std::size_t break_inside(const gui_forms::SurfaceRoot* root, std::string_view text, std::size_t begin,
-                             std::size_t limit, gui_forms::FontSpec font, double width);
-
-    std::vector<gui_forms::LineBreakOpportunity> opportunities_{};
-    WrapCounters counters_{};
+    gui_forms::ParagraphBuffers buffers_{};
+    std::size_t per_byte_capacity_{};
+    std::size_t storage_bytes_{};
+    TextLayoutCounters counters_{};
 };
 
-// The line box of a font: height and baseline from its top.
-[[nodiscard]] gui_forms::LineBoxMetrics font_line_box(const gui_forms::SurfaceRoot* root, gui_forms::FontSpec font);
-
-// The fonts a row is set in and their line boxes, resolved once per theme
-// and text engine (RowFonts::generation changes when any of them does).
+// The fonts a row is set in and their line boxes (paragraph_line_box),
+// resolved once per theme and text engine (RowFonts::generation changes
+// when any of them does).
 struct RowFonts final {
     gui_forms::FontSpec body{};
     gui_forms::FontSpec name{};
@@ -110,6 +102,10 @@ struct RowGeometry final {
     [[nodiscard]] static double text_width(double row_width) noexcept;
 };
 
+// The body paragraph's style: preserved line ends, long words (URLs) broken
+// between clusters, verified fit (the lines Painter draws).
+[[nodiscard]] gui_forms::ParagraphStyle body_style(const RowFonts& fonts, double text_width) noexcept;
+
 // One cached row layout: everything paint and describe read, filled once
 // when the row is laid out at a width and reused until its message, its
 // predecessor, its edit revision, the width or the fonts change.
@@ -124,7 +120,9 @@ struct RowLayoutEntry final {
     std::uint64_t font_generation{};
 
     std::string text{};
-    std::vector<WrappedLine> lines{};
+    // Line records at capacity; the first line_count are this layout's.
+    std::vector<gui_forms::ParagraphLine> lines{};
+    std::size_t line_count{};
     UserId author{};
     std::int64_t timestamp_ms{};
     bool header{};
@@ -145,8 +143,8 @@ struct RingCounters final {
 // lives in slot m mod capacity, so any run of up to `capacity` consecutive
 // rows never collides (the viewport and its overscan are such a run until
 // rows are erased). Every slot's storage is reserved at construction
-// (maximum_text_bytes of text, a line vector), so steady scrolling refills
-// slots in place without allocating. One thread.
+// (text_capacity bytes of text, reserved_lines line records), so steady
+// scrolling refills slots in place without allocating. One thread.
 class RowLayoutRing final {
 public:
     static constexpr std::size_t default_capacity = 256U;

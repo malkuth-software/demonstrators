@@ -24,12 +24,6 @@
 
 namespace chat_stress {
 
-// An inclusive range of rows (the drag-selected messages).
-struct RowRange final {
-    RowIndex first{};
-    RowIndex last{};
-};
-
 // The painter's own work counters (section 6); they only grow.
 struct ChatRowsCounters final {
     std::uint64_t rows_measured{};
@@ -64,16 +58,13 @@ public:
     // Precondition: row < corpus row_count().
     const RowLayoutEntry& layout_row(RowIndex row, double row_width);
 
-    // The drag-selected rows (painted with a tint), or none.
-    void set_range(std::optional<RowRange> range) noexcept { range_ = range; }
-    [[nodiscard]] std::optional<RowRange> range() const noexcept { return range_; }
     // Forgets the cached layout of a message (its text changed).
     void forget(MessageId message) noexcept { ring_.invalidate(message); }
     void forget_all() noexcept { ring_.invalidate_all(); }
 
     [[nodiscard]] ChatRowsCounters counters() const noexcept { return counters_; }
     [[nodiscard]] RingCounters ring_counters() const noexcept { return ring_.counters(); }
-    [[nodiscard]] WrapCounters wrap_counters() const noexcept { return wrapper_.counters(); }
+    [[nodiscard]] TextLayoutCounters text_counters() const noexcept { return wrapper_.counters(); }
     [[nodiscard]] std::size_t ring_capacity() const noexcept { return ring_.capacity(); }
     [[nodiscard]] std::size_t storage_bytes() const noexcept;
     [[nodiscard]] const RowFonts& fonts() const noexcept { return fonts_; }
@@ -83,7 +74,8 @@ private:
     // engine; a change bumps fonts_.generation (every cached layout is then
     // stale).
     void refresh_fonts();
-    [[nodiscard]] const gui_forms::SurfaceRoot* metrics_root() const noexcept;
+    // The window's text engine, or null (the renderer-free estimates).
+    [[nodiscard]] gui_forms::TextMetricsProvider* metrics_provider() const noexcept;
     void paint_day_separator(gui_forms::Painter& painter, const RowLayoutEntry& entry, gui_forms::Rect bounds,
                              gui_forms::Color rule, gui_forms::Color text);
     void paint_avatar(gui_forms::Painter& painter, const RowLayoutEntry& entry, gui_forms::Rect avatar);
@@ -92,11 +84,10 @@ private:
     AvatarAtlas& atlas_;
     gui_forms::VirtualRowsView* view_{};
     RowLayoutRing ring_;
-    TextWrapper wrapper_;
+    ParagraphWrapper wrapper_;
     RowFonts fonts_{};
     // Formatting scratch, reused (paint and describe never allocate once warm).
     std::string scratch_{};
-    std::optional<RowRange> range_{};
     ChatRowsCounters counters_{};
 };
 

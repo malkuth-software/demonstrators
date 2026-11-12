@@ -4,6 +4,7 @@
 #include <gui_forms/types/painter/painter.hpp>
 
 #include <cstdio>
+#include <span>
 #include <string_view>
 
 namespace chat_stress {
@@ -34,12 +35,6 @@ std::size_t cut_at_character(std::string_view text, std::size_t limit) noexcept 
 bool same_line_box(const gf::LineBoxMetrics& left, const gf::LineBoxMetrics& right) noexcept {
     const bool same = left.height == right.height && left.baseline == right.baseline;
     return same;
-}
-
-gf::Color with_alpha(gf::Color colour, std::uint8_t alpha) noexcept {
-    gf::Color result = colour;
-    result.alpha = alpha;
-    return result;
 }
 
 } // namespace
@@ -85,10 +80,12 @@ void ChatRows::detach() {
     view_ = nullptr;
 }
 
-const gf::SurfaceRoot* ChatRows::metrics_root() const noexcept {
+gf::TextMetricsProvider* ChatRows::metrics_provider() const noexcept {
     if (view_ == nullptr) return nullptr;
     const gf::SurfaceRoot* root = (*view_).attached_surface_root();
-    return root;
+    if (root == nullptr) return nullptr;
+    gf::TextMetricsProvider* provider = (*root).text_metrics_provider();
+    return provider;
 }
 
 void ChatRows::refresh_fonts() {
@@ -115,16 +112,16 @@ void ChatRows::refresh_fonts() {
     const bool same_fonts = fonts_.generation != 0U && resolved_body == fonts_.body && resolved_name == fonts_.name &&
                             resolved_meta == fonts_.meta && resolved_initials == fonts_.initials;
     if (same_fonts) return;
-    const gf::SurfaceRoot* root = metrics_root();
+    gf::TextMetricsProvider* provider = metrics_provider();
     RowFonts fresh{};
     fresh.body = resolved_body;
     fresh.name = resolved_name;
     fresh.meta = resolved_meta;
     fresh.initials = resolved_initials;
-    fresh.body_line = font_line_box(root, resolved_body);
-    fresh.name_line = font_line_box(root, resolved_name);
-    fresh.meta_line = font_line_box(root, resolved_meta);
-    fresh.initials_line = font_line_box(root, resolved_initials);
+    fresh.body_line = gf::paragraph_line_box(provider, resolved_body, std::nullopt);
+    fresh.name_line = gf::paragraph_line_box(provider, resolved_name, std::nullopt);
+    fresh.meta_line = gf::paragraph_line_box(provider, resolved_meta, std::nullopt);
+    fresh.initials_line = gf::paragraph_line_box(provider, resolved_initials, std::nullopt);
     const bool same_boxes = same_line_box(fresh.body_line, fonts_.body_line) &&
                             same_line_box(fresh.name_line, fonts_.name_line) &&
                             same_line_box(fresh.meta_line, fonts_.meta_line);
@@ -169,14 +166,18 @@ const RowLayoutEntry& ChatRows::layout_row(RowIndex row, double row_width) {
     }
 
     const double text_width = RowGeometry::text_width(row_width);
-    std::size_t lines = wrapper_.wrap(metrics_root(), entry.text, fonts_.body, text_width, entry.lines);
-    if (lines == 0U) lines = 1U;
+    const gf::ParagraphStyle style = body_style(fonts_, text_width);
+    const LaidOutParagraph laid = wrapper_.lay_out(metrics_provider(), entry.text, style, entry.lines);
+    entry.line_count = laid.line_count;
+    // An empty body still takes one line box.
+    double body_height = laid.height;
+    if (laid.line_count == 0U) body_height = fonts_.body_line.height;
     double top = RowGeometry::continuation_top;
     if (entry.header) top = RowGeometry::header_top;
     double y = top;
     if (entry.day_separator) y += RowGeometry::day_band;
     if (entry.header) y += fonts_.name_line.height;
-    y += static_cast<double>(lines) * fonts_.body_line.height;
+    y += body_height;
     double height = y + RowGeometry::bottom;
     if (entry.header) {
         double avatar_bottom = top + RowGeometry::avatar + RowGeometry::bottom;
@@ -200,7 +201,7 @@ void ChatRows::measure(gf::VirtualRowMeasure& request) {
     if (entry.header && view_ != nullptr) {
         gf::SurfaceRoot* root = (*view_).attached_surface_root();
         if (root != nullptr) {
-            static_cast<void>(atlas_.ensure(*root, *view_, entry.author, corpus_.user(entry.author)));
+            static_cast<void>(atlas_.ensure(*root, entry.author, corpus_.user(entry.author)));
         }
     }
     request.height = entry.height;
@@ -224,16 +225,14 @@ void ChatRows::paint_day_separator(gf::Painter& painter, const RowLayoutEntry& e
 void ChatRows::paint_avatar(gf::Painter& painter, const RowLayoutEntry& entry, gf::Rect avatar) {
     const UserRecord& user = corpus_.user(entry.author);
     const double radius = RowGeometry::avatar / 2.0;
-    const std::optional<gf::Rect> source = atlas_.source_of(entry.author);
-    if (source.has_value() && atlas_.created()) {
+    bool drawn = false;
+    if (view_ != nullptr) {
         painter.save();
         painter.clip_rounded_rect(avatar, radius);
-        painter.draw_image_region(atlas_.image(), *source, avatar);
+        drawn = atlas_.draw(painter, *view_, entry.author, avatar);
         painter.restore();
-    } else {
-        atlas_.note_paint_fallback();
-        painter.fill_rounded_rect(avatar, radius, hue_colour(user.hue, 60U, 46U));
     }
+    if (!drawn) painter.fill_rounded_rect(avatar, radius, hue_colour(user.hue, 60U, 46U));
     const std::string_view initials(user.initials);
     const gf::Size size = painter.measure_text_utf8(initials, fonts_.initials);
     const gf::LineBoxMetrics box = fonts_.initials_line;
@@ -243,7 +242,7 @@ void ChatRows::paint_avatar(gf::Painter& painter, const RowLayoutEntry& entry, g
 }
 
 void ChatRows::paint(gf::VirtualRowPaint& request) {
-    if (request.painter == nullptr || request.view == nullptr) return;
+    if (request.painter == nullptr || request.view == nullptr || view_ == nullptr) return;
     if (request.row.value >= corpus_.row_count()) {
         ++counters_.stale_rows_refused;
         return;
@@ -254,10 +253,6 @@ void ChatRows::paint(gf::VirtualRowPaint& request) {
     const RowIndex row{request.row.value};
     const RowLayoutEntry& entry = layout_row(row, bounds.width);
     const gf::BasicControlStyle& style = (*request.view).effective_theme().basic_style();
-
-    if (range_.has_value() && !(row < (*range_).first) && !((*range_).last < row)) {
-        painter.fill_rect(bounds, with_alpha(style.accent_light, 160U));
-    }
 
     double top = bounds.y + RowGeometry::continuation_top;
     if (entry.header) top = bounds.y + RowGeometry::header_top;
@@ -292,13 +287,16 @@ void ChatRows::paint(gf::VirtualRowPaint& request) {
     }
     gf::Color body = style.text;
     if (entry.deleted) body = style.disabled_text;
-    const std::string_view text(entry.text);
-    for (const WrappedLine& line : entry.lines) {
-        const std::string_view run = text.substr(line.begin, line.end - line.begin);
-        painter.draw_text_utf8({text_x, line_top + fonts_.body_line.baseline}, run, fonts_.body, body);
-        line_top += fonts_.body_line.height;
-        ++counters_.lines_drawn;
-    }
+    gf::ParagraphPaint placement{};
+    placement.origin = gf::Point{text_x, line_top};
+    placement.color = body;
+    placement.device_scale = 1.0;
+    const gf::SurfaceRoot* root = (*view_).attached_surface_root();
+    if (root != nullptr) placement.device_scale = (*root).scale();
+    placement.visible = bounds;
+    const gf::ParagraphStyle paragraph = body_style(fonts_, RowGeometry::text_width(bounds.width));
+    const std::span<const gf::ParagraphLine> lines(entry.lines.data(), entry.line_count);
+    counters_.lines_drawn += gf::paint_paragraph(painter, entry.text, lines, paragraph, placement);
     ++counters_.rows_painted;
 }
 

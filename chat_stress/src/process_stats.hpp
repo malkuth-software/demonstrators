@@ -1,9 +1,9 @@
 #pragma once
 
 // Process figures for the workload records (CHAT_STRESS_SPEC section 6):
-// footprint, CPU time, process start, heap in use and a description of the
-// machine. Each is host-specific code (macOS, Windows, Linux); GUI.Forms
-// offers no portable diagnostics call for them (GAPS.md 9). A figure a host
+// footprint, CPU time, process start and a description of the machine.
+// Each is host-specific code (macOS, Windows, Linux); GUI.Forms
+// offers no portable diagnostics call for them (GAPS.md A9). A figure a host
 // cannot give is reported absent, never guessed.
 
 #include <cstdint>
@@ -25,17 +25,6 @@ namespace chat_stress {
 
 // Now, microseconds since the Unix epoch (system clock).
 [[nodiscard]] std::int64_t unix_microseconds_now();
-
-// The C heap's blocks and bytes in use, read without hooking the allocator
-// (macOS malloc_zone_statistics over every zone, glibc mallinfo2). A
-// difference between two readings is a net figure (allocations less frees),
-// not an allocation count: GUI.Forms has no public allocation counter
-// (GAPS.md 6) and the app installs no allocator of its own.
-struct HeapReading final {
-    std::uint64_t blocks_in_use{};
-    std::uint64_t bytes_in_use{};
-};
-[[nodiscard]] std::optional<HeapReading> heap_in_use();
 
 // The machine, read in-process (no shell): model, processor, memory,
 // logical processors, operating system and version.

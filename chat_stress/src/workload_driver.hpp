@@ -57,11 +57,16 @@ struct FrameSample final {
     std::uint64_t scroll_repaints{};
     std::uint64_t frames_presented{};
     double painted_area{};
-    std::uint64_t text_measure_calls{};
+    std::uint64_t text_shaping_calls{};
     std::uint64_t ring_misses{};
     std::uint64_t timestamp_hash_calls{};
     std::uint64_t semantic_children{};
     std::uint64_t index_runs{};
+    std::uint64_t index_bytes{};
+    // GUI.Forms' counted allocation paths over the tick, every thread
+    // (allocation_statistics totals): not the process's allocations.
+    std::uint64_t gui_forms_allocations{};
+    std::uint64_t gui_forms_allocated_bytes{};
 };
 
 class WorkloadDriver final : public gui_forms::Component {
