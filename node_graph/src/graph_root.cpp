@@ -1,6 +1,7 @@
 #include "graph_root.hpp"
 
 #include <gui_forms/event.hpp>
+#include <gui_forms/surface_root/surface_root.hpp>
 #include <gui_forms/types/painter/painter.hpp>
 
 #include <algorithm>
