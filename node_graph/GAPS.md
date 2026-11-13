@@ -108,7 +108,10 @@ canvas (`set_socket_type_name(0, "float")`) used for the class.
 **N14. The palette's rows paint with literal colours.** `VirtualRowsView`'s
 row paint target gets no ink, so the kind palette's title and family ink are
 constants in `GraphRoot::paint_palette_row`. Shape: the row's resolved
-foreground (normal, selected, hot) in `VirtualRowPaint`.
+foreground (normal, selected, hot) in `VirtualRowPaint`. Closed on
+`claude/cp32-demonstrator-gaps` by `a6fbe5a12` (the flame graph's F5):
+`VirtualRowPaint::foreground` is `item_content_text` for the selection
+family in the row's states; not yet folded.
 
 ## Drawing ABI (`gd_*`)
 
