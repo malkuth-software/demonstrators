@@ -36,22 +36,6 @@ void append_decimal(std::string& out, double value) {
     if (written > 0) out.append(buffer, static_cast<std::size_t>(written));
 }
 
-std::size_t live_count_of_nodes(const gf::NodeGraph& graph) noexcept {
-    std::size_t count = 0U;
-    for (const gf::NodeRecord& node : graph.node_slots()) {
-        if (node.live) ++count;
-    }
-    return count;
-}
-
-std::size_t live_count_of_links(const gf::NodeGraph& graph) noexcept {
-    std::size_t count = 0U;
-    for (const gf::LinkRecord& link : graph.link_slots()) {
-        if (link.live) ++count;
-    }
-    return count;
-}
-
 } // namespace
 
 GraphRoot::GraphRoot(gf::StableId stable_id)
@@ -62,13 +46,14 @@ GraphRoot::GraphRoot(gf::StableId stable_id)
 }
 
 GraphRoot::~GraphRoot() {
-    // The palette may outlive this control (a shared child): unbind the row
-    // targets before their object goes.
+    // The palette and the canvas may outlive this control (shared
+    // children): unbind the targets that name it before it goes.
     if (palette_ != nullptr) (*palette_).set_row_callbacks(gf::VirtualRowsCallbacks{});
+    if (canvas_ != nullptr) (*canvas_).set_edit_target(gf::Delegate<gf::NodeEditRequest&>{});
 }
 
 void GraphRoot::initialize_control_tree() {
-    canvas_ = gf::make_control<NodeCanvasView>(gf::StableId("node-graph.canvas"), document_, evaluator_);
+    canvas_ = gf::make_control<GraphCanvas>(gf::StableId("node-graph.canvas"), document_, evaluator_);
     status_ = gf::make_control<gf::Label>(gf::StableId("node-graph.status"));
     palette_ = gf::make_control<gf::VirtualRowsView>(gf::StableId("node-graph.palette"));
     (*palette_).set_estimated_row_height(palette_row_height);
@@ -79,14 +64,17 @@ void GraphRoot::initialize_control_tree() {
     callbacks.describe =
         gf::Delegate<gf::VirtualRowDescription&>::bind<GraphRoot, &GraphRoot::describe_palette_row>(*this);
     (*palette_).set_row_callbacks(callbacks);
+    (*canvas_).set_edit_target(gf::Delegate<gf::NodeEditRequest&>::bind<GraphRoot, &GraphRoot::provide_editor>(*this));
 
     add_child(canvas_);
     add_child(status_);
     add_child(palette_);
 
-    gf::on((*canvas_).edit_requested(), *this, &GraphRoot::on_edit_requested);
-    gf::on((*canvas_).palette_requested(), *this, &GraphRoot::on_palette_requested);
-    gf::on((*canvas_).changed(), *this, &GraphRoot::on_canvas_changed);
+    gf::on((*canvas_).palette_requested(), *this, &GraphRoot::on_canvas_palette);
+    gf::on((*canvas_).edit_ended(), *this, &GraphRoot::on_canvas_edit_ended);
+    gf::on((*canvas_).graph_edited(), *this, &GraphRoot::on_canvas_edited);
+    gf::on((*canvas_).selection_changed(), *this, &GraphRoot::on_canvas_selection);
+    gf::on((*canvas_).view_changed(), *this, &GraphRoot::on_canvas_view);
     gf::on((*canvas_).save_requested(), *this, &GraphRoot::on_save_requested);
     gf::on((*canvas_).context_menu_requested(), *this, &GraphRoot::on_context_request);
     gf::on((*palette_).row_activated(), *this, &GraphRoot::on_palette_activated);
@@ -110,43 +98,36 @@ void GraphRoot::arrange(gf::Rect final_bounds) {
     gf::Rect palette{};
     if (palette_request_.has_value()) {
         const double height = palette_row_height * palette_rows_shown;
-        // Kept inside the canvas: moved left and up when it would overflow.
-        const double x = std::clamp(palette_origin_.x, 0.0, std::max(0.0, width - palette_width));
-        const double y = std::clamp(palette_origin_.y, 0.0, std::max(0.0, canvas_height - height));
+        // The canvas sits at this control's origin, so its local point is
+        // ours. Kept inside the canvas: moved left and up when it would
+        // overflow.
+        const gf::Point at = (*palette_request_).local;
+        const double x = std::clamp(at.x, 0.0, std::max(0.0, width - palette_width));
+        const double y = std::clamp(at.y, 0.0, std::max(0.0, canvas_height - height));
         palette = gf::Rect{x, y, palette_width, height};
     }
     set_child_layout(palette_, palette);
-    const gf::Rect host = edit_host_rect();
-    for (std::size_t index = 0U; index < edit_hosts_.size(); ++index) {
-        if (edit_hosts_[index] == nullptr) continue;
-        const bool open = editing_kind_.has_value() && (*editing_kind_).value == index;
-        set_child_layout(edit_hosts_[index], open ? host : gf::Rect{});
-    }
 }
 
-gf::Rect GraphRoot::edit_host_rect() const {
-    if (!editing_.has_value()) return gf::Rect{};
-    const gf::NodeRecord* node = document_.graph().node((*editing_).node);
-    if (node == nullptr) return gf::Rect{};
-    const gf::Rect rect = (*canvas_).view().rect_to_view((*node).bounds);
-    const double width = std::max(rect.width, 120.0);
-    // The title over the caption; a property just under it.
-    const double y = (*editing_).title ? rect.y : rect.y + 24.0 * (*canvas_).view().zoom;
-    const gf::Rect host{rect.x, y, width, edit_host_height};
-    return host;
+// -- editing ----------------------------------------------------------------------------------
+
+bool GraphRoot::open_edit(gf::NodeId node, gf::NodeEditPart part) {
+    const bool opened = (*canvas_).begin_edit(node, part);
+    return opened;
 }
 
-// -- edit hosts -----------------------------------------------------------------------------
-
-bool GraphRoot::open_edit(const EditRequest& request) {
-    if (editing_.has_value()) close_edit_host();
+void GraphRoot::provide_editor(gf::NodeEditRequest& request) {
+    // Runs inside the canvas's callback scope: it may read the graph and
+    // its own state, and must not call the canvas.
     const std::optional<KindIndex> kind = document_.kind_of(request.node);
     const gf::NodeRecord* node = document_.graph().node(request.node);
-    if (!kind.has_value() || node == nullptr || (*kind).value >= edit_hosts_.size()) return false;
+    if (!kind.has_value() || node == nullptr || (*kind).value >= edit_hosts_.size()) {
+        ++counters_.edits_declined;
+        return;
+    }
     const KindDescriptor& descriptor = kind_at(*kind);
-    EditRequest effective = request;
-    // A kind without a primary property edits its title.
-    if (descriptor.primary_property.empty()) effective.title = true;
+    // A kind without a primary property edits its title from the body too.
+    const bool title = request.part == gf::NodeEditPart::caption || descriptor.primary_property.empty();
     std::shared_ptr<gf::TextBox>& host = edit_hosts_[(*kind).value];
     if (host == nullptr) {
         std::string id("node-graph.edit.");
@@ -154,53 +135,51 @@ bool GraphRoot::open_edit(const EditRequest& request) {
         host = gf::make_control<gf::TextBox>(gf::StableId(id));
         (*host).accepts_enter = true;
         (*host).accepts_escape = true;
-        add_child(host);
         gf::on((*host).committed(), *this, &GraphRoot::on_host_committed);
         gf::on((*host).cancelled(), *this, &GraphRoot::on_host_cancelled);
         gf::on((*host).focus_observed(), *this, &GraphRoot::on_host_focus);
         ++counters_.edit_hosts_created;
     }
     edit_before_.clear();
-    if (effective.title) {
+    if (title) {
         edit_before_.assign((*node).title);
     } else {
         const gf::NodeProperty* property = document_.graph().property(request.node, descriptor.primary_property);
         if (property != nullptr) edit_before_.assign((*property).value);
     }
-    editing_ = effective;
-    editing_kind_ = kind;
     (*host).text = edit_before_;
     (*host).visible = true;
+    editing_ = OpenEdit{request.node, title, *kind};
     ++counters_.edits_opened;
-    invalidate(gf::Dirty::arrange);
-    gf::SurfaceRoot* root = attached_surface_root();
-    if (root != nullptr) static_cast<void>((*root).request_focus(host));
-    return true;
+    request.editor = host;
 }
 
 gf::TextBox* GraphRoot::edit_host() const noexcept {
-    if (!editing_kind_.has_value()) return nullptr;
-    return edit_hosts_[(*editing_kind_).value].get();
+    if (!editing_.has_value()) return nullptr;
+    return edit_hosts_[(*editing_).kind.value].get();
 }
 
 void GraphRoot::commit_edit(const std::string& text) {
     if (!editing_.has_value()) return;
-    const EditRequest request = *editing_;
-    const KindIndex kind = *editing_kind_;
-    close_edit_host();
+    // Cleared first: ending the edit removes the focused editor, and that
+    // focus loss must find nothing to commit.
+    const OpenEdit edit = *editing_;
+    editing_.reset();
     if (text == edit_before_) {
-        // Nothing changed: no step, so the document stays byte-identical.
+        // Nothing changed: the canvas's group closes empty, which forms no
+        // step, so the document stays byte-identical.
         ++counters_.edits_unchanged;
+        (*canvas_).end_edit(gf::NodeEditEnd::commit);
         return;
     }
-    document_.begin_gesture();
+    // Inside the canvas's open group: the change and its end are one step.
     gf::GraphResult result{};
-    if (request.title) {
-        result = document_.set_title(request.node, text);
+    if (edit.title) {
+        result = document_.set_title(edit.node, text);
     } else {
-        result = document_.set_property(request.node, kind_at(kind).primary_property, text);
+        result = document_.set_property(edit.node, kind_at(edit.kind).primary_property, text);
     }
-    static_cast<void>(document_.end_gesture());
+    (*canvas_).end_edit(gf::NodeEditEnd::commit);
     if (result.status == gf::GraphStatus::ok) ++counters_.edits_committed;
     (*canvas_).document_changed();
     refresh_status();
@@ -208,24 +187,20 @@ void GraphRoot::commit_edit(const std::string& text) {
 
 void GraphRoot::cancel_edit() {
     if (!editing_.has_value()) return;
-    close_edit_host();
+    editing_.reset();
+    (*canvas_).end_edit(gf::NodeEditEnd::cancel);
     ++counters_.edits_cancelled;
 }
 
-void GraphRoot::close_edit_host() {
-    gf::TextBox* host = edit_host();
-    // Cleared first: hiding the focused host loses its focus, and that
-    // focus loss must find nothing to commit.
-    editing_.reset();
-    editing_kind_.reset();
-    if (host != nullptr) (*host).visible = false;
-    invalidate(gf::Dirty::arrange);
-    gf::SurfaceRoot* root = attached_surface_root();
-    if (root != nullptr) static_cast<void>((*root).request_focus(canvas_));
-}
-
-void GraphRoot::on_edit_requested(const EditRequest& request) {
-    static_cast<void>(open_edit(request));
+void GraphRoot::on_canvas_edit_ended(const gf::NodeEditEnded& ended) {
+    static_cast<void>(ended);
+    // Still set: the canvas ended the edit itself, not commit_edit or
+    // cancel_edit.
+    if (editing_.has_value()) {
+        editing_.reset();
+        ++counters_.edits_ended_by_canvas;
+    }
+    refresh_status();
 }
 
 void GraphRoot::on_host_committed(const std::string& text) {
@@ -246,7 +221,7 @@ void GraphRoot::on_host_focus(bool focused) {
 
 // -- palette --------------------------------------------------------------------------------
 
-void GraphRoot::open_palette(const PaletteRequest& request) {
+void GraphRoot::open_palette(const gf::NodePaletteRequest& request) {
     palette_kinds_.clear();
     const std::span<const KindDescriptor> table = kind_table();
     std::optional<std::uint16_t> from_type{};
@@ -262,7 +237,6 @@ void GraphRoot::open_palette(const PaletteRequest& request) {
         palette_kinds_.push_back(KindIndex{static_cast<std::uint16_t>(index)});
     }
     palette_request_ = request;
-    palette_origin_ = point_from_window(request.window_position);
     (*palette_).reset_rows(palette_kinds_.size());
     (*palette_).visible = true;
     ++counters_.palette_opened;
@@ -282,7 +256,7 @@ void GraphRoot::close_palette() {
 
 bool GraphRoot::insert_from_palette(std::size_t row) {
     if (!palette_request_.has_value() || row >= palette_kinds_.size()) return false;
-    const PaletteRequest request = *palette_request_;
+    const gf::NodePaletteRequest request = *palette_request_;
     const KindIndex kind = palette_kinds_[row];
     close_palette();
     // Placed so that the point is the new node's left middle when a link
@@ -310,7 +284,7 @@ bool GraphRoot::insert_from_palette(std::size_t row) {
     return true;
 }
 
-void GraphRoot::on_palette_requested(const PaletteRequest& request) {
+void GraphRoot::on_canvas_palette(const gf::NodePaletteRequest& request) {
     open_palette(request);
 }
 
@@ -346,9 +320,21 @@ void GraphRoot::describe_palette_row(gf::VirtualRowDescription& row) {
 
 // -- canvas events, menu, status ------------------------------------------------------------
 
-void GraphRoot::on_canvas_changed() {
-    if (palette_request_.has_value() && (*canvas_).gesture() != Gesture::none) close_palette();
-    if (editing_.has_value()) invalidate(gf::Dirty::arrange);
+void GraphRoot::on_canvas_edited(const gf::NodeGraphEdited& edited) {
+    static_cast<void>(edited);
+    refresh_status();
+}
+
+void GraphRoot::on_canvas_selection(const gf::NodeCanvasSelection& selection) {
+    static_cast<void>(selection);
+    refresh_status();
+}
+
+void GraphRoot::on_canvas_view(const gf::SceneViewTransform& view) {
+    static_cast<void>(view);
+    // A pan or zoom gesture moves the view away from where the palette was
+    // asked for.
+    if (palette_request_.has_value() && (*canvas_).gesture() != gf::NodeCanvasGesture::none) close_palette();
     refresh_status();
 }
 
@@ -387,7 +373,8 @@ void GraphRoot::rebuild_menu() {
 }
 
 void GraphRoot::on_context_request(gf::ContextMenuRequest& request) {
-    // The canvas marks a knife release handled; that is not a menu request.
+    // The canvas marks a knife release and a keyboard request (its palette)
+    // handled; neither is a menu request.
     if (request.handled) return;
     gf::Point local = request.location;
     if (request.origin != gf::ContextRequestOrigin::pointer) {
@@ -404,16 +391,16 @@ void GraphRoot::on_context_request(gf::ContextMenuRequest& request) {
 void GraphRoot::on_menu_item(const gf::MenuItemInvocation& invocation) {
     const std::string_view item = invocation.item_id;
     if (item == menu_add) {
-        PaletteRequest request{};
+        gf::NodePaletteRequest request{};
         request.world = menu_world_;
-        request.window_position = (*canvas_).point_to_window((*canvas_).view().to_view(menu_world_));
+        request.local = (*canvas_).view().to_view(menu_world_);
         open_palette(request);
     } else if (item == menu_frame) {
         (*canvas_).frame_all();
     } else if (item == menu_soft) {
-        (*canvas_).set_link_style(LinkStyle::soft);
+        (*canvas_).set_link_style(gf::NodeLinkStyle::soft);
     } else if (item == menu_routed) {
-        (*canvas_).set_link_style(LinkStyle::routed);
+        (*canvas_).set_link_style(gf::NodeLinkStyle::routed);
     } else if (item == menu_paper) {
         (*canvas_).set_background(BackgroundVariant::paper);
     } else if (item == menu_blue) {
@@ -427,15 +414,14 @@ void GraphRoot::on_menu_item(const gf::MenuItemInvocation& invocation) {
 
 void GraphRoot::refresh_status() {
     const gf::NodeGraph& graph = document_.graph();
-    const CanvasStatistics& statistics = (*canvas_).statistics();
     status_text_.clear();
-    append_count(status_text_, live_count_of_nodes(graph));
+    append_count(status_text_, graph.node_count());
     status_text_.append(" nodes | ");
-    append_count(status_text_, live_count_of_links(graph));
+    append_count(status_text_, graph.link_count());
     status_text_.append(" links | zoom ");
     append_decimal(status_text_, (*canvas_).view().zoom);
     status_text_.append(" | ");
-    status_text_.append(lod_name(statistics.level));
+    status_text_.append(gf::scene_detail_level_name((*canvas_).detail_level()));
     status_text_.append(" | selected ");
     append_count(status_text_, (*canvas_).selection().size());
     status_text_.append(" | undo ");

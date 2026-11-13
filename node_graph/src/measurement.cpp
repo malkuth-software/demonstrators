@@ -27,24 +27,25 @@ void field(JsonWriter& json, std::string_view name, double number) {
     json.value(number);
 }
 
-void write_canvas(JsonWriter& json, const CanvasStatistics& canvas) {
+void write_canvas(JsonWriter& json, const gf::NodeCanvasStatistics& canvas) {
     json.begin_object();
     field(json, "frames_painted", canvas.frames_painted);
     field(json, "nodes_painted", canvas.nodes_painted);
     field(json, "links_painted", canvas.links_painted);
-    field(json, "links_culled", canvas.links_culled);
     field(json, "link_points_flattened", canvas.link_points_flattened);
-    field(json, "titles_laid_out", canvas.titles_laid_out);
-    field(json, "title_cache_hits", canvas.title_cache_hits);
-    field(json, "title_layouts_failed", canvas.title_layouts_failed);
-    field(json, "title_lines_drawn", canvas.title_lines_drawn);
-    field(json, "text_runs_drawn", canvas.text_runs_drawn);
+    field(json, "captions_drawn", canvas.captions_drawn);
     field(json, "text_skipped_small", canvas.text_skipped_small);
+    field(json, "ports_painted", canvas.ports_painted);
+    field(json, "lamps_painted", canvas.lamps_painted);
     field(json, "hit_tests", canvas.hit_tests);
-    field(json, "hit_test_link_checks", canvas.hit_test_link_checks);
-    field(json, "index_rebuilds", canvas.index_rebuilds);
+    field(json, "node_index_builds", canvas.node_index_builds);
+    field(json, "link_index_builds", canvas.link_index_builds);
+    field(json, "index_moves_in_place", canvas.index_moves_in_place);
+    field(json, "index_moves_refused", canvas.index_moves_refused);
+    field(json, "router_runs", canvas.router_runs);
+    field(json, "lamp_repaints", canvas.lamp_repaints);
     field(json, "gestures_started", canvas.gestures_started);
-    field(json, "moves_committed", canvas.moves_committed);
+    field(json, "gestures_committed", canvas.gestures_committed);
     field(json, "gestures_cancelled", canvas.gestures_cancelled);
     field(json, "link_drags", canvas.link_drags);
     field(json, "magnet_candidates", canvas.magnet_candidates);
@@ -56,31 +57,44 @@ void write_canvas(JsonWriter& json, const CanvasStatistics& canvas) {
     field(json, "knife_cuts", canvas.knife_cuts);
     field(json, "palette_requests", canvas.palette_requests);
     field(json, "edit_requests", canvas.edit_requests);
+    field(json, "edits_committed", canvas.edits_committed);
+    field(json, "edits_cancelled", canvas.edits_cancelled);
     field(json, "clicks_suppressed", canvas.clicks_suppressed);
     field(json, "key_presses_suppressed", canvas.key_presses_suppressed);
-    field(json, "ambient_frames", canvas.ambient_frames);
-    field(json, "ambient_enlistments", canvas.ambient_enlistments);
-    field(json, "router_runs", canvas.router_runs);
-    field(json, "router_expanded", canvas.router_expanded);
-    field(json, "router_storage_growths", canvas.router_storage_growths);
-    field(json, "router_fallbacks", canvas.router_fallbacks);
-    json.key("last_route");
-    json.begin_object();
-    field(json, "routed", static_cast<std::uint64_t>(canvas.last_route.routed));
-    field(json, "fallbacks", static_cast<std::uint64_t>(canvas.last_route.fallbacks));
-    field(json, "grid_columns", static_cast<std::uint64_t>(canvas.last_route.grid_columns));
-    field(json, "grid_rows", static_cast<std::uint64_t>(canvas.last_route.grid_rows));
-    field(json, "expanded", static_cast<std::uint64_t>(canvas.last_route.expanded));
-    field(json, "crossings", static_cast<std::uint64_t>(canvas.last_route.crossings));
-    field(json, "nudged", static_cast<std::uint64_t>(canvas.last_route.nudged));
-    field(json, "storage_growths", static_cast<std::uint64_t>(canvas.last_route.storage_growths));
-    json.end_object();
+    field(json, "level_transitions", canvas.level_transitions);
+    field(json, "focus_rings_painted", canvas.focus_rings_painted);
+    field(json, "item_looks_resolved", canvas.item_looks_resolved);
+    field(json, "flow_frames", canvas.flow_frames);
+    field(json, "flow_links_painted", canvas.flow_links_painted);
     field(json, "last_frame_nodes", static_cast<std::uint64_t>(canvas.last_frame_nodes));
     field(json, "last_frame_links", static_cast<std::uint64_t>(canvas.last_frame_links));
-    field(json, "last_frame_live_sinks", static_cast<std::uint64_t>(canvas.last_frame_live_sinks));
     json.key("level");
-    json.value(lod_name(canvas.level));
-    field(json, "level_transitions", canvas.level_transitions);
+    json.value(gf::scene_detail_level_name(canvas.level));
+    json.end_object();
+}
+
+void write_graph_canvas(JsonWriter& json, const GraphCanvasCounters& canvas) {
+    json.begin_object();
+    field(json, "selection_raised", canvas.selection_raised);
+    field(json, "link_connected_raised", canvas.link_connected_raised);
+    field(json, "graph_edited_raised", canvas.graph_edited_raised);
+    field(json, "view_raised", canvas.view_raised);
+    field(json, "palette_raised", canvas.palette_raised);
+    field(json, "edit_ended_raised", canvas.edit_ended_raised);
+    field(json, "link_checks", canvas.link_checks);
+    field(json, "link_checks_refused", canvas.link_checks_refused);
+    field(json, "bodies_painted", canvas.bodies_painted);
+    field(json, "value_bars_painted", canvas.value_bars_painted);
+    field(json, "previews_painted", canvas.previews_painted);
+    field(json, "body_text_skipped", canvas.body_text_skipped);
+    field(json, "evaluations", canvas.evaluations);
+    field(json, "flow_marks", canvas.flow_marks);
+    field(json, "ambient_frames", canvas.ambient_frames);
+    field(json, "ambient_enlistments", canvas.ambient_enlistments);
+    field(json, "background_changes", canvas.background_changes);
+    field(json, "save_requests", canvas.save_requests);
+    field(json, "last_frame_live_sinks", static_cast<std::uint64_t>(canvas.last_frame_live_sinks));
+    field(json, "flowing_links", static_cast<std::uint64_t>(canvas.flowing_links));
     json.end_object();
 }
 
@@ -102,17 +116,21 @@ void write_drag(JsonWriter& json, const gf::DragTrackerStatistics& drag) {
     json.end_object();
 }
 
-void write_index(JsonWriter& json, const SpatialIndexStatistics& index) {
+void write_index(JsonWriter& json, const gf::SpatialIndexStatistics& index) {
     json.begin_object();
     field(json, "builds", index.builds);
     field(json, "queries", index.queries);
     field(json, "cells_visited", index.cells_visited);
     field(json, "entries_visited", index.entries_visited);
+    field(json, "moved_in_place", index.moved_in_place);
+    field(json, "moved_out_of_cells", index.moved_out_of_cells);
+    field(json, "moves_refused", index.moves_refused);
     field(json, "columns", static_cast<std::uint64_t>(index.columns));
     field(json, "rows", static_cast<std::uint64_t>(index.rows));
     field(json, "cell_size", index.cell_size);
-    field(json, "entries", static_cast<std::uint64_t>(index.entries));
+    field(json, "cell_entries", static_cast<std::uint64_t>(index.cell_entries));
     field(json, "oversize", static_cast<std::uint64_t>(index.oversize));
+    field(json, "displaced", static_cast<std::uint64_t>(index.displaced));
     json.end_object();
 }
 
@@ -138,6 +156,14 @@ void write_document(JsonWriter& json, const DocumentCounters& document) {
     field(json, "cycle_check_visits", document.cycle_check_visits);
     field(json, "topology_builds", document.topology_builds);
     field(json, "lamp_writes", document.lamp_writes);
+    field(json, "canvas_moves", document.canvas_moves);
+    field(json, "canvas_connects", document.canvas_connects);
+    field(json, "canvas_disconnects", document.canvas_disconnects);
+    field(json, "canvas_removals", document.canvas_removals);
+    field(json, "canvas_undos", document.canvas_undos);
+    field(json, "canvas_redos", document.canvas_redos);
+    field(json, "canvas_edits", document.canvas_edits);
+    field(json, "gestures_cancelled", document.gestures_cancelled);
     json.end_object();
 }
 
@@ -156,6 +182,8 @@ void write_root(JsonWriter& json, const GraphRootCounters& root) {
     json.begin_object();
     field(json, "edit_hosts_created", root.edit_hosts_created);
     field(json, "edits_opened", root.edits_opened);
+    field(json, "edits_declined", root.edits_declined);
+    field(json, "edits_ended_by_canvas", root.edits_ended_by_canvas);
     field(json, "edits_committed", root.edits_committed);
     field(json, "edits_cancelled", root.edits_cancelled);
     field(json, "edits_unchanged", root.edits_unchanged);
@@ -172,11 +200,13 @@ void write_root(JsonWriter& json, const GraphRootCounters& root) {
 
 CounterSnapshot read_counters(GraphRoot& root) {
     CounterSnapshot snapshot{};
-    NodeCanvasView& canvas = root.canvas();
+    GraphCanvas& canvas = root.canvas();
     const gf::NodeGraph& graph = root.document().graph();
     snapshot.canvas = canvas.statistics();
     snapshot.drag = canvas.drag_statistics();
-    snapshot.index = canvas.index_statistics();
+    snapshot.node_index = canvas.node_index_statistics();
+    snapshot.link_index = canvas.link_index_statistics();
+    snapshot.graph_canvas = canvas.counters();
     snapshot.document = root.document().counters();
     snapshot.evaluator = root.evaluator().counters();
     snapshot.root = root.counters();
@@ -202,8 +232,12 @@ void write_counters(JsonWriter& json, const CounterSnapshot& snapshot) {
     write_canvas(json, snapshot.canvas);
     json.key("drag");
     write_drag(json, snapshot.drag);
-    json.key("index");
-    write_index(json, snapshot.index);
+    json.key("node_index");
+    write_index(json, snapshot.node_index);
+    json.key("link_index");
+    write_index(json, snapshot.link_index);
+    json.key("graph_canvas");
+    write_graph_canvas(json, snapshot.graph_canvas);
     json.key("document");
     write_document(json, snapshot.document);
     json.key("evaluator");

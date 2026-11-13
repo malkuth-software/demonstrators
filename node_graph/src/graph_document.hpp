@@ -17,6 +17,7 @@
 
 #include "kinds.hpp"
 
+#include <gui_forms/controls/node_canvas.hpp>
 #include <gui_forms/controls/node_graph.hpp>
 
 #include <cstddef>
@@ -92,6 +93,15 @@ struct DocumentCounters final {
     std::uint64_t cycle_check_visits{};
     std::uint64_t topology_builds{};
     std::uint64_t lamp_writes{};
+    // Operations the canvas ran itself, by NodeGraphEditKind.
+    std::uint64_t canvas_moves{};
+    std::uint64_t canvas_connects{};
+    std::uint64_t canvas_disconnects{};
+    std::uint64_t canvas_removals{};
+    std::uint64_t canvas_undos{};
+    std::uint64_t canvas_redos{};
+    std::uint64_t canvas_edits{};
+    std::uint64_t gestures_cancelled{};
 };
 
 // The outgoing links of every node slot, in compressed rows: the targets of
@@ -110,9 +120,11 @@ public:
     GraphDocument& operator=(const GraphDocument&) = delete;
 
     [[nodiscard]] const gui_forms::NodeGraph& graph() const noexcept { return graph_; }
-    // Mutable access for the stress generator and tests only; the app's own
-    // edits go through the operations below so that they are counted.
-    [[nodiscard]] gui_forms::NodeGraph& graph_for_generation() noexcept { return graph_; }
+    // Mutable access for the canvas (NodeCanvas borrows the graph and runs
+    // its gestures' operations itself; it reports each through
+    // canvas_edited), the stress generator and tests. The app's own edits
+    // go through the operations below so that they are counted.
+    [[nodiscard]] gui_forms::NodeGraph& editable_graph() noexcept { return graph_; }
 
     // -- edits (each one undo step unless inside a gesture) -----------------------
     [[nodiscard]] gui_forms::GraphResult add_node(KindIndex kind, gui_forms::WorldPoint top_left);
@@ -129,10 +141,13 @@ public:
     // Gestures nest as NodeGraph's groups do.
     void begin_gesture() noexcept;
     [[nodiscard]] gui_forms::GraphResult end_gesture() noexcept;
-    // Ends the open gesture and takes its step back, for a gesture the user
-    // cancelled (Escape during a drag). NodeGraph has no rollback for an open
-    // group (GAPS.md G5), so the reverted step stays as a redo step.
-    void cancel_gesture();
+    // Cancels the open gesture (every level): NodeGraph::rollback_undo_group
+    // restores the state at the outermost begin_gesture and leaves no step,
+    // neither undo nor redo (GAPS.md N5, closed in cp31).
+    void cancel_gesture() noexcept;
+    // Counts an operation the canvas ran on the graph directly (its
+    // graph_edited raiser) and advances autosave.
+    void canvas_edited(gui_forms::NodeGraphEditKind kind);
 
     // Writes a port's lamp (evaluation state: not recorded for undo, not
     // saved) when it differs from the record's; true when it wrote.
@@ -187,10 +202,6 @@ private:
     std::uint32_t autosave_interval_{};
     std::uint32_t edits_since_autosave_{};
     std::size_t gesture_depth_{};
-    // At the outermost begin_gesture: the undo log's size, so that
-    // cancel_gesture knows whether the gesture recorded a step.
-    std::size_t gesture_steps_before_{};
-    std::size_t gesture_bytes_before_{};
     DocumentCounters counters_{};
 };
 

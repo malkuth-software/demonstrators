@@ -2,7 +2,8 @@
 // save/load/save stability, 1,000 seeded edits undone back to the same
 // bytes, tolerant load (normalised by the next save), refused input with
 // its position and the graph unchanged, and unknown kinds and properties
-// kept.
+// kept; a cancelled gesture rolled back with no redo step; the canvas's
+// operations counted by kind.
 
 #include "../src/generator.hpp"
 #include "../src/graph_document.hpp"
@@ -11,6 +12,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -161,6 +163,40 @@ void unknown_kinds_and_properties_are_kept() {
 
 } // namespace
 
+void cancelled_gesture_leaves_no_step() {
+    node_graph::GraphDocument document{};
+    static_cast<void>(generate(document, 64U, 5U));
+    const std::string before = saved(document);
+    const std::optional<node_graph::KindIndex> constant = node_graph::find_kind("constant");
+    require(constant.has_value(), "the constant kind exists");
+    document.begin_gesture();
+    document.begin_gesture();
+    const gf::GraphResult added = document.add_node(*constant, gf::WorldPoint{4000.0, 4000.0});
+    require(added.status == gf::GraphStatus::ok, "a node is added inside the gesture");
+    document.cancel_gesture();
+    require(saved(document) == before, "cancelling restores the document byte for byte");
+    require(document.graph().undo_steps() == 0U, "the cancelled gesture is no undo step");
+    require(document.graph().redo_steps() == 0U, "and no redo step (rollback, not undo)");
+    require(document.counters().gestures_cancelled == 1U, "the cancellation is counted");
+    // Every level closed: a later gesture starts afresh and forms one step.
+    document.begin_gesture();
+    static_cast<void>(document.add_node(*constant, gf::WorldPoint{4200.0, 4000.0}));
+    require(document.end_gesture().status == gf::GraphStatus::ok, "a new gesture closes");
+    require(document.graph().undo_steps() == 1U, "the new gesture is one step");
+}
+
+void canvas_edits_are_counted_by_kind() {
+    node_graph::GraphDocument document{};
+    document.canvas_edited(gf::NodeGraphEditKind::moved);
+    document.canvas_edited(gf::NodeGraphEditKind::moved);
+    document.canvas_edited(gf::NodeGraphEditKind::connected);
+    document.canvas_edited(gf::NodeGraphEditKind::undone);
+    document.canvas_edited(gf::NodeGraphEditKind::edited);
+    const node_graph::DocumentCounters counters = document.counters();
+    require(counters.canvas_moves == 2U && counters.canvas_connects == 1U, "moves and connects are counted");
+    require(counters.canvas_undos == 1U && counters.canvas_edits == 1U, "undos and edit ends are counted");
+}
+
 int main() {
     try {
         generator_is_deterministic();
@@ -169,6 +205,8 @@ int main() {
         tolerant_load_is_normalised();
         hostile_input_is_refused();
         unknown_kinds_and_properties_are_kept();
+        cancelled_gesture_leaves_no_step();
+        canvas_edits_are_counted_by_kind();
     } catch (const std::exception& failure) {
         std::fprintf(stderr, "document_tests: %s\n", failure.what());
         return 1;

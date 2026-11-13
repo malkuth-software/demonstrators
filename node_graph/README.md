@@ -13,23 +13,30 @@ Status: written, not yet built.
 
 ## What it shows
 
-- A canvas (`src/node_canvas_view.*`) over GUI.Forms' `NodeGraph`: pan
-  (middle drag, or Space and drag), zoom about the pointer (wheel), a world
-  grid in levels of four that fade into each other, and four levels of
-  detail with hysteresis (overview, silhouette, compact, full).
+- GUI.Forms' public `NodeCanvas` (cp31) over its `NodeGraph`, subclassed
+  as `GraphCanvas` (`src/graph_canvas*`): pan (middle drag, or Space and
+  drag), zoom about the pointer (wheel), the theme's blueprint grid in
+  levels of four that fade into each other, four levels of detail with
+  hysteresis, and the background variants (paper, blueprint, green, grey)
+  as theme classes of the canvas, switched from the context menu.
 - 21 node kinds in five families (sources, math, colour, curves, sinks) and
   a reroute, with typed sockets (float, colour, curve, signal, boolean), a
-  conversion table, live previews (value bars, colour swatches, curves, a
-  scrolling plot, readouts) and output lamps from an evaluator that runs in
-  topological order and refuses cycles.
+  conversion table answering the canvas's `check_link`, live previews
+  (value bars, colour swatches, curves, a scrolling plot, readouts) painted
+  through its `paint_body` target, and output lamps written by an evaluator
+  that runs in topological order and refuses cycles; links from time-driven
+  sources carry the theme's flow marks.
 - Soft curved links, or routed links through GUI.Forms' `LinkRouter`; link
-  drags with a magnet (capture within 16 view units, release beyond 24)
-  over GUI.Forms' `DragTracker`; a release on empty canvas opens the add-node
+  drags with the canvas's `DragTracker` magnet (capture within 16 view
+  units, held until 24); a release on empty canvas opens the add-node
   palette filtered to kinds that accept the link.
 - Click, Shift and Ctrl selection, marquee, moves snapped to the grid (one
   undo step per drag), the knife (Ctrl + secondary drag) to cut links,
-  Delete, undo and redo, keyboard moves, F2 and double-click editing in one
-  edit host per kind.
+  Delete, undo and redo (Escape rolls a gesture back with no step), the
+  keyboard graph, F2 and double-click editing in one reused editor per kind
+  that the canvas hosts over the node, Ctrl+S to save.
+- Every NodeCanvas event raiser overridden: each counts, keeps the
+  document's counters and autosave in step, and calls its base.
 - Load and save in GUI.Forms' `gui-forms-graph 1` format, tolerant on load
   (comments, CRLF, spacing) and canonical on save; unknown kinds and
   properties are kept and written back.
@@ -52,9 +59,8 @@ Status: written, not yet built.
 | `src/graph_document.*` | The document over `NodeGraph`: counted edits, gestures as undo groups, type and cycle checks, files, autosave |
 | `src/evaluator.*` | Evaluation, lamps, plot histories, the bounded expression parser |
 | `src/generator.*` | Seeded stress graphs and seeded edits |
-| `src/canvas_geometry.*` | View transform, levels of detail, link curves, crossings, the spatial index |
-| `src/node_canvas_view.*`, `src/node_canvas_paint.cpp` | The canvas control: input, gestures, hit testing, semantics, painting |
-| `src/graph_root.*` | The window content: canvas, status line, palette, edit hosts, context menu |
+| `src/graph_canvas.*`, `src/graph_canvas_body.cpp` | The NodeCanvas subclass: link check, bodies, editors, raisers, backgrounds, evaluation, flow, live sinks |
+| `src/graph_root.*` | The window content: canvas, status line, palette, editors, context menu |
 | `src/measurement.*`, `src/json_writer.*`, `src/workloads.*` | Records and workloads |
 | `src/options.*`, `src/graph_window.*`, `src/main.cpp` | Command line, window, entry |
-| `tests/` | Model, document, geometry and headless canvas tests; offscreen paint test |
+| `tests/` | Model, document and headless canvas tests; offscreen paint test |

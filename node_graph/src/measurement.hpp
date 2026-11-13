@@ -11,7 +11,7 @@
 #include "graph_document.hpp"
 #include "graph_root.hpp"
 #include "json_writer.hpp"
-#include "node_canvas_view.hpp"
+#include "graph_canvas.hpp"
 
 #include <gui_forms/allocation/statistics/allocation_statistics.hpp>
 
@@ -25,9 +25,13 @@ namespace node_graph {
 
 // Everything the app counts, read at one moment.
 struct CounterSnapshot final {
-    CanvasStatistics canvas{};
+    // NodeCanvas's own statistics, its DragTracker's and its two indexes'.
+    gui_forms::NodeCanvasStatistics canvas{};
     gui_forms::DragTrackerStatistics drag{};
-    SpatialIndexStatistics index{};
+    gui_forms::SpatialIndexStatistics node_index{};
+    gui_forms::SpatialIndexStatistics link_index{};
+    // What the app's subclass counts (raisers, bodies, evaluation, flow).
+    GraphCanvasCounters graph_canvas{};
     DocumentCounters document{};
     EvaluatorCounters evaluator{};
     GraphRootCounters root{};

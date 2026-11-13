@@ -103,7 +103,7 @@ GeneratorReport generate_stress_graph(GraphDocument& document, const GeneratorOp
     GeneratorReport report{};
     LoadReport ignored{};
     static_cast<void>(document.load_text(empty_document, ignored));
-    gf::NodeGraph& graph = document.graph_for_generation();
+    gf::NodeGraph& graph = document.editable_graph();
     const gf::UndoLimits limits = graph.undo_limits();
     // Recording off while generating: the generated graph is the start.
     graph.set_undo_limits(gf::UndoLimits{0U, limits.maximum_bytes});

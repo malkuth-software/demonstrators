@@ -199,10 +199,6 @@ gf::GraphResult GraphDocument::redo() {
 }
 
 void GraphDocument::begin_gesture() noexcept {
-    if (gesture_depth_ == 0U) {
-        gesture_steps_before_ = graph_.undo_steps();
-        gesture_bytes_before_ = graph_.undo_bytes();
-    }
     ++gesture_depth_;
     graph_.begin_undo_group();
 }
@@ -219,14 +215,30 @@ gf::GraphResult GraphDocument::end_gesture() noexcept {
     return result;
 }
 
-void GraphDocument::cancel_gesture() {
-    const bool outermost = gesture_depth_ == 1U;
-    const gf::GraphResult ended = end_gesture();
-    if (ended.status != gf::GraphStatus::ok || !outermost) return;
-    // The step count stays put when the bound dropped the oldest step, so
-    // the log's byte estimate is compared too.
-    const bool recorded = graph_.undo_steps() != gesture_steps_before_ || graph_.undo_bytes() != gesture_bytes_before_;
-    if (recorded) static_cast<void>(graph_.undo());
+void GraphDocument::cancel_gesture() noexcept {
+    if (gesture_depth_ == 0U) return;
+    // Closes every level, as rollback_undo_group does.
+    gesture_depth_ = 0U;
+    const gf::GraphResult rolled = graph_.rollback_undo_group();
+    if (rolled.status == gf::GraphStatus::ok) ++counters_.gestures_cancelled;
+}
+
+void GraphDocument::canvas_edited(gf::NodeGraphEditKind kind) {
+    switch (kind) {
+    case gf::NodeGraphEditKind::moved: ++counters_.canvas_moves; break;
+    case gf::NodeGraphEditKind::connected: ++counters_.canvas_connects; break;
+    case gf::NodeGraphEditKind::disconnected: ++counters_.canvas_disconnects; break;
+    case gf::NodeGraphEditKind::removed: ++counters_.canvas_removals; break;
+    case gf::NodeGraphEditKind::undone: ++counters_.canvas_undos; break;
+    case gf::NodeGraphEditKind::redone: ++counters_.canvas_redos; break;
+    case gf::NodeGraphEditKind::edited:
+        // An edit's end: its operations went through set_title or
+        // set_property, which counted them and advanced autosave already.
+        ++counters_.canvas_edits;
+        return;
+    default: ++counters_.canvas_edits; break;
+    }
+    edited();
 }
 
 // -- topology ------------------------------------------------------------------------------

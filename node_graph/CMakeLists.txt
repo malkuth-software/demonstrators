@@ -20,19 +20,19 @@ find_package(GUIForms 0.6 CONFIG REQUIRED COMPONENTS Controls)
 
 # Sources that need only the portable libraries (Core and Controls): the
 # kinds and socket types, the document, the evaluator, the generator, the
-# geometry, the canvas, the window content and the records. Tests link them
+# canvas (GUI.Forms' NodeCanvas, subclassed), the window content and the
+# records. Tests link them
 # as a static library with GUIForms::Controls.
 set(NODE_GRAPH_MODEL_SOURCES
-    src/canvas_geometry.cpp
     src/evaluator.cpp
     src/generator.cpp
+    src/graph_canvas.cpp
+    src/graph_canvas_body.cpp
     src/graph_document.cpp
     src/graph_root.cpp
     src/json_writer.cpp
     src/kinds.cpp
     src/measurement.cpp
-    src/node_canvas_paint.cpp
-    src/node_canvas_view.cpp
     src/options.cpp
     src/socket_types.cpp)
 
@@ -82,7 +82,7 @@ endif()
 
 enable_testing()
 
-foreach(test_name IN ITEMS model_tests document_tests geometry_tests canvas_tests)
+foreach(test_name IN ITEMS model_tests document_tests canvas_tests)
     add_executable(${test_name} tests/${test_name}.cpp)
     target_link_libraries(${test_name} PRIVATE node_graph_model)
     node_graph_configure(${test_name})
