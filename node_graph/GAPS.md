@@ -118,8 +118,8 @@ callback; everything else is NodeCanvas's. No `gd_*` call is needed by the
 app itself. For the seal: a C or C# client of `NodeCanvas` would need the
 body callback's painter as a drawing context (`gd_context` borrowed for the
 call) and a checker fill, which the C++ body uses for the swatch's
-transparency backdrop (*unverified* that `gd_*` has one; see the flame graph
-demonstrator's GAPS.md for the drawing ABI survey).
+transparency backdrop; gd_* has one (`checker_brush_create`). See the flame
+graph demonstrator's GAPS.md for the drawing ABI survey.
 
 ## Risks to confirm in the first build and run
 
