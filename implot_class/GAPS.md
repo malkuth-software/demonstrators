@@ -11,24 +11,24 @@ has confirmed.
 
 | Gap | Status |
 |---|---|
-| P1 custom plot kinds rebuild the PlotView frame | Open: `PlotFrame` in the app |
-| P2 no heatmap or histogram series kind | Open: custom controls over `paint_heatmap` / `paint_histogram` |
-| P3 no draggable handles | Open: `DragModel` and `DragPlot` in the app |
-| P4 no device scale for a control or painter | Open: transforms use scale 1 |
-| P5 theme plot roles unreadable by custom kinds | Open: the app hard-codes colours |
-| P6 no per-region cursor | Open |
-| P7 PlotView takes no AxisLink | Open: linked by hand through `view_changed` |
-| P8 hidden-tab plots keep the motion clock | Open, *unverified*: the app withdraws sources |
-| P9 no deterministic motion-clock drive offscreen | Open: workloads call `on_ambient_frame` |
-| P10 `bin_values` adds, does not clear | Documented; awkward |
-| P11 implicit pointer capture | *unverified* |
-| G1 gd_* library not installed | Open: off by default |
-| G2 no band fill | Open: polygon per band |
-| G3 polylines have no gaps | Open: split at NaN by the app |
-| G4 no per-rectangle colours | Open: one call per colour, or a bitmap |
-| G5 no header for `gdr_initialize` | Open: declared by hand |
-| G6 no bridge from a recorder to a Painter | Open: export only |
-| G7 no text in gd_* | Open: the export has no labels |
+| P1 custom plot kinds rebuild the PlotView frame | Closed: `PlotCustomSeries`, 20da664c0 |
+| P2 no heatmap or histogram series kind | Closed: `PlotHeatmapSeries`, `PlotHistogramSeries`, 20da664c0 |
+| P3 no draggable handles | Open: needs a design (owner decision) |
+| P4 no device scale for a control or painter | Answered: `attached_surface_root().scale()`, documented in 20da664c0 |
+| P5 theme plot roles unreadable by custom kinds | Closed: `resolve_plot_palette`, `plot_series_color`, 20da664c0 |
+| P6 no per-region cursor | Answered: write `cursor` from `on_mouse_move`, documented in 20da664c0 |
+| P7 PlotView takes no AxisLink | Closed: `PlotLinkGroup`, 20da664c0 |
+| P8 hidden-tab plots keep the motion clock | Answered: an unpainted plot leaves the clock; test in 20da664c0 |
+| P9 no deterministic motion-clock drive offscreen | Answered: `Window::poll_frame_schedule`, documented in 20da664c0 |
+| P10 `bin_values` adds, does not clear | Closed: `bin_values_into`, 20da664c0 |
+| P11 implicit pointer capture | Answered: a primary press captures; test in 20da664c0 |
+| G1 gd_* library not installed | Closed: `GUIForms::DrawingCApi`, `GUIForms::DrawingRaster`, c6d025801 |
+| G2 no band fill | Closed: `recorder_fill_band` (ABI 0.4), c6d025801 |
+| G3 polylines have no gaps | Closed: `recorder_draw_polyline_runs` (ABI 0.4), c6d025801 |
+| G4 no per-rectangle colours | Closed: `recorder_fill_rectangles_each` (ABI 0.4), c6d025801 |
+| G5 no header for `gdr_initialize` | Closed: `drawing_raster_c_api.h`, c6d025801 |
+| G6 no bridge from a recorder to a Painter | Closed in C++: `replay_drawing_commands`, c6d025801; C ABI open (owner decision) |
+| G7 no text in gd_* | Retracted: `font_create`, `recorder_draw_string`, `measure_string` exist |
 
 ## Plots package
 
@@ -167,3 +167,49 @@ recorder.
 title or legend. Wanted: `recorder_draw_text_utf8(recorder, gd_point,
 const char*, uint32_t bytes, const gd_font_spec*, gd_color)` and a matching
 measure.
+
+## Closure on GUI.Forms
+
+Closed on GUI.Forms branch `claude/cp32-demonstrator-gaps` (base
+`origin/checkpoint/2026-11-12-cp29` at b8e702fa6), not yet integrated or
+built. The shas are that branch's commits.
+
+**G1 to G5, ABI 0.4 (c6d025801).** `gui_drawing_c_api` installs as
+`GUIForms::DrawingCApi` and the raster module as `GUIForms::DrawingRaster`
+(components `DrawingCApi` and `DrawingRaster` of `find_package(GUIForms)`),
+with the raster fonts in `lib/fonts` (`bin/fonts` on Windows). ABI 0.4
+appends three entries to `gd_api_v0`, so a 0.3 caller is unchanged:
+`recorder_fill_band(recorder, brush, const gd_point* upper, const gd_point*
+lower, uint64_t count)`, `recorder_draw_polyline_runs(recorder, pen, const
+gd_point*, uint64_t)` (a NaN coordinate breaks the line) and
+`recorder_fill_rectangles_each(recorder, const gd_rect*, const gd_color*,
+uint64_t)`. They take a brush handle and a 64-bit count, like the other
+batch calls, not the colour and 32-bit count proposed above. Each records
+existing command kinds, so replay and the trace are unchanged.
+`gui_forms/drawing_raster_c_api.h` declares `gdr_initialize`.
+
+**G6 (c6d025801).** `replay_drawing_commands(commands, Painter&)` in
+`controls/drawing_surface_replay.hpp` draws a recording into a Painter and
+reports what it could not: text (until the font identity work lands),
+ellipses, paths, images, clears, non-solid brushes and transforms other
+than translations. A C-ABI paint callback that receives a recorder needs
+handles shared between the gd and gf libraries: an owner decision.
+
+**G7.** A misreading: gd_* has text (`font_create`, `recorder_draw_string`,
+`measure_string`). The export can carry labels.
+
+**P1, P2, P5, P7, P10 (20da664c0).** `PlotSeriesItem::set_custom` takes a
+`PlotCustomSeries` (extent, mark capacity, paint, pick) that PlotView
+frames, pans, zooms and picks like its own kinds; `PlotHeatmapSeries` and
+`PlotHistogramSeries` are two of them. `resolve_plot_palette` and
+`plot_series_color` give custom kinds the theme's plot colours.
+`PlotLinkGroup` links the x, y or both axes of several PlotViews.
+`plots::bin_values_into` clears before it counts.
+
+**P4, P6, P8, P9, P11 (20da664c0).** Existing behaviour, now stated in the
+headers, with tests for P8 and P11.
+
+**P3.** Not built. Draggable handles need a design: whether handles are a
+series kind, an overlay item or a PlotView gesture, and how a drag
+commits. An owner decision.
+
