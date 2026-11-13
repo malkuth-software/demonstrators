@@ -19,7 +19,7 @@ run has confirmed.
 | F6 plot theme roles unreadable by custom views | Closed: `20da664c0` (`resolve_plot_palette`, `plot_series_color`) |
 | F7 no categorical or hashed palette | Closed: `2d78c1bbe` (`categorical_color`, `plot_category_color`) |
 | F8 tick labels have no unit formatting | Closed: `2d78c1bbe` (`TickLabelUnit::duration`) |
-| F9 no tooltip for a region of a custom control | Owner decision: the hook exists; data items carry no tooltips |
+| F9 no tooltip for a region of a custom control | Closed by rule: no tooltips on data items; the details pane or status line shows a hovered cell |
 | F10 custom views publish no semantic items | Not a library gap: the realized-item virtuals |
 | F11 no file dialog without host services | Open: host services (as node graph N8) |
 | F12 loading runs on the UI thread | Not a library gap: BackgroundWorker; see the note |
@@ -146,12 +146,12 @@ workarounds until the fold.
 - **F8.** `TickRequest::label_unit = TickLabelUnit::duration` with
   `unit_seconds` (1e-3 for a millisecond axis): one unit per tick set (s,
   ms, µs, ns; the largest in which the step is at least 0.1), "0.5 ms".
-- **F9.** A control can already answer per region: set
-  `set_publishes_item_tool_tips(true)` in its constructor and override
-  `tool_tip_items()` with the visible regions' nodes (bounds and
-  `tool_tip`). The owner's 2026-11-02 rule is that data items carry no
-  tooltips (DataGridView's error glyphs are the one exception), and flame
-  cells are data, so this is the owner's call, not a missing API.
+- **F9.** The owner's rule stands: data items carry no tooltips (the
+  2026-11-02 rule; DataGridView's error glyphs are the one exception), and
+  flame cells are data. The flame graph shows a hovered cell's name, total,
+  self and share in its details pane or status line instead. (The per-region
+  hook, `set_publishes_item_tool_tips` with `tool_tip_items()`, is for
+  interface parts, not data.)
 - **F10.** Control's realized-item virtuals (`realized_item_count` and its
   siblings, as VirtualRowsView overrides them) publish visible cells; an
   app task, not a library gap.
