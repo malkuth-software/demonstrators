@@ -14,7 +14,7 @@ run has confirmed.
 | F1 PlotViewModel has no single-axis mode | Closed: `22d9fbaa7` (axis-zone rules stated and tested; `set_gesture_axes`) |
 | F2 no elided or boxed text | Closed: `06cc3e6a7` (`fit_text_utf8`, `draw_text_utf8_fitted`) |
 | F3 no batched text | Closed: `06cc3e6a7` (`draw_text_runs`) |
-| F4 VirtualRowsView has no columns or header | Open: design note below; not in this batch |
+| F4 VirtualRowsView has no columns or header | Closed: `9dc084103` (`VirtualRowsColumn`, `set_columns`, `header_clicked`, `cell_content_paint`) |
 | F5 row ink not passed to row paint | Closed: `a6fbe5a12` (`VirtualRowPaint::foreground`) |
 | F6 plot theme roles unreadable by custom views | Closed: `20da664c0` (`resolve_plot_palette`, `plot_series_color`) |
 | F7 no categorical or hashed palette | Closed: `2d78c1bbe` (`categorical_color`, `plot_category_color`) |
@@ -131,10 +131,22 @@ workarounds until the fold.
   `TextTrim::cut` or `ellipsis` (two draws at most, no allocation) and the
   virtual `draw_text_runs` (`TextRun`: origin, text, colour). Test:
   `gui_forms_painter_text_fitting_tests`.
-- **F4.** Not in this batch. The shape stands: a column model on
-  VirtualRowsView (widths, alignment, a header part with a sort indicator,
-  `header_clicked`, a per-cell paint target), which needs a design note
-  and the header's keyboard and accessibility rules first.
+- **F4.** A column model on VirtualRowsView, not a DataGridView virtual
+  mode (coordinator ruling). `set_columns` takes `VirtualRowsColumn`s (id,
+  header, width and minimum, alignment, sortable, resizable, reorderable,
+  draw mode); `set_column_width`, `move_column` (the sort column follows)
+  and `set_sort`. The header strip draws through parts (`column_header`,
+  `column_label`, `sort_glyph`, `column_divider`) as realized items of a
+  `column_header` item system, so themes style the sort indicator. Divider
+  drags resize (`column_resized`), drags reorder (`column_moved`), a click
+  on a sortable header raises `header_clicked`; the view never sorts.
+  `column_cell` gives a column's cell in a row, and owner-drawn columns
+  raise `cell_content_paint` per cell through the item-content seam.
+  Headers are semantic column headers (index, sort direction, press); the
+  header is not a tab stop. No horizontal scrolling yet. `DetailsTable`
+  can drop its own header strip and edge hit-testing. Tests:
+  `virtual_rows_view_tests` (`column_model`, `column_pointer`,
+  `column_right_to_left`, `column_owner_draw`, `column_semantics`).
 - **F5.** `VirtualRowPaint::foreground` is `item_content_text` for the
   selection family in the row's states. Test: `million_rows_bounded_work`.
 - **F6.** `resolve_plot_palette(const Control&)` (grid, axis, text,
