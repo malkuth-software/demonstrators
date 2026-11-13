@@ -9,15 +9,15 @@ gd_* drawing ABI is not used here; its gaps are in `implot_class/GAPS.md`.
 
 | Gap | Status |
 |---|---|
-| I1 docking | Partly a misreading: docked-only works without windows; note below |
-| I2 no colour picker | Open: needs a design (owner decision); note below |
+| I1 docking | Partly a misreading: docked-only works without windows; `DockWorkspace::add_panels`, 22f379dc6 |
+| I2 no colour picker | Closed: `ColorPicker`, ColorValueEditor drop-down, 68293de62 |
 | I3 no vector editor | Open: note below |
 | I4 owner draw is per grid, not per column | Closed: `DataGridViewColumn::owner_draw`, eb0fd4205 |
-| I5 plots in cells | Closed: `paint_sparkline`, d0e9a3c73; no sparkline column kind |
-| I6 run-time styling is text only | Open: needs a design (owner decision) |
-| I7 compiling a theme needs the window | Open: needs a design (owner decision) |
+| I5 plots in cells | Closed: `paint_sparkline`, d0e9a3c73; `DataGridViewColumnKind::sparkline`, 02ed7481b |
+| I6 run-time styling is text only | Closed: `ThemeOverrides`, `Control::set_theme_overrides`, 7bf90f4dd |
+| I7 compiling a theme needs the window | Closed: `Control::set_theme_sheet`, 61959fce2 |
 | I8 tree expand and collapse all | Closed: `expand_all`, `collapse_all`, `expand_to`, d0e9a3c73 |
-| I9 labelled rows | Awkward: `FormStack` in the app |
+| I9 labelled rows | Closed: `FormLayout`, 2f16bff75 |
 | I10 ValueBar scrub capture | Answered: the press captures, documented in bf76ee6fa |
 | I11 ColorValueEditor alpha | Answered: alpha is kept, documented and tested in bf76ee6fa |
 
@@ -130,13 +130,43 @@ ValueBar's press captures the pointer, and the host's pointer lock decides
 whether a long scrub is unbounded or stops at the window's edge;
 ColorValueEditor keeps alpha (`#RRGGBBAA`, or `#RRGGBB` as opaque).
 
-**I2, I6, I7.** Not built; each needs an owner decision first. I2: a new
-stock `ColorPicker` (saturation-value square, hue and alpha bars, channel
-fields) needs its parts and look in the design language, or
-ColorValueEditor could open one as a drop-down instead. I6: a typed
-`ThemeOverrides` is a new public theme surface ahead of the ABI seal.
-I7: `set_theme_sheet` compiled at attachment needs a rule for where a
-refusal is reported when no caller is waiting.
+**I5 column (02ed7481b).** `DataGridViewColumnKind::sparkline`: the
+cell's value is a collection of numbers, painted with `paint_sparkline`
+into a per-column workspace; it is read-only and its text is the newest
+finite value. The C ABI does not accept the kind yet.
+
+**I1 (22f379dc6).** `DockWorkspace::add_panels(registrations)` registers
+and shows a list of panels in one call, refusing the whole list (changing
+nothing) for an empty, repeated or already registered id; the header says
+that a docked-only workspace needs no `attach_windows`.
+
+**I7 (61959fce2).** `Control::set_theme_sheet(text, name)` compiles at
+once when the control is in a window and otherwise at attachment; either
+way it reports its diagnostics through `theme_sheet_compiled()` (and the
+call's return when it compiled at once), and a refused sheet leaves the
+previous override in place.
+
+**I6 (7bf90f4dd).** `ThemeOverrides` sets typed values (background,
+border and text colours, corner radius, border width, opacity) on a
+control, part and optional state, checked against the stock anatomies
+when set, and writes them as a theme sheet; `Control::set_theme_overrides`
+applies one through `set_theme_sheet`. The "property families" of the
+ruling were read as the theme language's material properties.
+
+**I9 (2f16bff75).** `FormLayout`: `add_row(caption, control, height)`
+makes the caption (a Label that names an unnamed control), with the
+caption column sized to the widest caption or `caption_width`, and
+`caption_alignment`, `row_spacing`, `column_spacing`. Hidden controls'
+rows take no space.
+
+**I2 (68293de62).** `ColorPicker`, a stock control: a saturation-
+brightness field, a hue track, an alpha track (`alpha_enabled`) and a
+swatch; pointer drags and keys pick, `value_changed` on each move and
+`value_committed` on release or key edit. ColorValueEditor opens one as a
+drop-down from its swatch (or Alt+Down, F4, `open_picker`), and the Linux
+host's colour dialog shows one beside its hex field. Its gradients are
+content colours painted in one file the paint census exempts, pending the
+owner's decision.
 
 **I1, docking, against stage DK.** A docked-only workspace already works
 without host windows: a `DockSite` bound to a `DockWorkspace` and set as a

@@ -13,7 +13,7 @@ has confirmed.
 |---|---|
 | P1 custom plot kinds rebuild the PlotView frame | Closed: `PlotCustomSeries`, 20da664c0 |
 | P2 no heatmap or histogram series kind | Closed: `PlotHeatmapSeries`, `PlotHistogramSeries`, 20da664c0 |
-| P3 no draggable handles | Open: needs a design (owner decision) |
+| P3 no draggable handles | Closed: `PlotView::set_handles` on DragTracker, e9b020773, cc35ebb22 |
 | P4 no device scale for a control or painter | Answered: `attached_surface_root().scale()`, documented in 20da664c0 |
 | P5 theme plot roles unreadable by custom kinds | Closed: `resolve_plot_palette`, `plot_series_color`, 20da664c0 |
 | P6 no per-region cursor | Answered: write `cursor` from `on_mouse_move`, documented in 20da664c0 |
@@ -209,7 +209,14 @@ frames, pans, zooms and picks like its own kinds; `PlotHeatmapSeries` and
 **P4, P6, P8, P9, P11 (20da664c0).** Existing behaviour, now stated in the
 headers, with tests for P8 and P11.
 
-**P3.** Not built. Draggable handles need a design: whether handles are a
-series kind, an overlay item or a PlotView gesture, and how a drag
-commits. An owner decision.
+**P3 (e9b020773, cc35ebb22).** `PlotView::set_handles` takes up to 256
+`PlotHandle`s (point, vertical line or horizontal line, in data
+coordinates). A primary press within `handle_pick_radius` drags one on the
+declarative drag engine (DragTracker), with the axis a line cannot move
+locked; each move raises `handle_moved` and the release (or a cancel)
+`handle_committed`, with the DragEnd. The plot engine paints them.
+
+**G6 in the C ABI.** Deferred by the coordinator until
+`claude/cp32-font-family` folds: then the gd and gf libraries share
+handles so a gf paint callback can replay a gd recorder, with text.
 
