@@ -28,7 +28,7 @@ has confirmed.
 | G4 no per-rectangle colours | Closed: `recorder_fill_rectangles_each` (ABI 0.4), c6d025801 |
 | G5 no header for `gdr_initialize` | Closed: `drawing_raster_c_api.h`, c6d025801 |
 | G6 no bridge from a recorder to a Painter | Closed in C++: `replay_drawing_commands`, c6d025801; C ABI open (owner decision) |
-| G7 no text in gd_* | Retracted: `font_create`, `recorder_draw_string`, `measure_string` exist |
+| G7 no text in gd_* | Retracted: `font_create`, `recorder_draw_string`, `measure_string` exist; boxed and batched text, ABI 0.5, 991c00fbc |
 
 ## Plots package
 
